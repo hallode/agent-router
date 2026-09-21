@@ -97,6 +97,33 @@ governor_probe_quota() {
   fi
 }
 
+# governor_refresh_if_stale [max_age_seconds]
+# Refresh the state from the quota command when the stored reading has gone
+# stale. Callers that are about to pick a model use this so that "the governor
+# sees the wall coming" does not depend on someone else having run `router
+# probe` recently.
+#
+# An unexpired override — set by hand or by an observed rate-limit — is left
+# alone: it was set because something was already known, and a probe must not
+# quietly undo it. A probe that fails leaves the previous state untouched.
+governor_refresh_if_stale() {
+  local max_age="${1:-300}" now updated reason exp
+  governor_init
+  now=$(date +%s)
+  updated=$(jq -r '.updated // 0' "$ROUTER_STATE" 2>/dev/null) || return 0
+  reason=$(jq -r '.reason // ""'  "$ROUTER_STATE" 2>/dev/null)
+  exp=$(jq -r '.expires // 0'     "$ROUTER_STATE" 2>/dev/null)
+
+  case "$reason" in
+    quota:*|init|expired) ;;                                   # probe-derived: replaceable
+    *) [ "$exp" -gt "$now" ] 2>/dev/null && return 0 ;;        # live override: keep
+  esac
+
+  [ $((now - updated)) -lt "$max_age" ] 2>/dev/null && return 0
+  governor_probe_quota >/dev/null 2>&1 || true
+  return 0
+}
+
 # governor_model <tier> — map a tier to a model under the current state.
 governor_model() {
   local tier="$1" st model

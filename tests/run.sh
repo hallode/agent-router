@@ -311,6 +311,205 @@ eq "slash command silent" "" "$(adv '{"prompt":"/commit","session_id":"x"}')"
 eq "empty prompt silent"  "" "$(adv '{"prompt":"","session_id":"x"}')"
 eq "garbage silent"       "" "$(adv 'not json')"
 
+echo "== wrapper: a refusal is never turned into a real run =="
+# The shell wrapper must fall back to the host CLI only when the router could
+# not start. Falling back on a deliberate refusal would perform exactly the
+# action that was refused.
+WRAP="$TMP/wrap.zsh"
+cat > "$WRAP" <<'ZSH'
+FELL_BACK=0
+command() { FELL_BACK=1; return 0; }
+source "$REPO_ROOT/shell/router.zsh"
+ZSH
+
+wrap_rc() { # wrap_rc <exit-code-the-router-returns> -> "<rc> <fellback>"
+  local fake="$TMP/fakebin"; mkdir -p "$fake"
+  printf '#!/bin/sh\nexit %s\n' "$1" > "$fake/cxr"; chmod +x "$fake/cxr"
+  zsh -c "
+    REPO_ROOT='$REPO_ROOT'; TMP='$TMP'
+    FELL_BACK=0
+    command() { FELL_BACK=1; return 0; }
+    ROUTER_HOME='$fake/..'
+    source '$REPO_ROOT/shell/router.zsh'
+    _router_run codex '$fake/cxr' 'do some bounded work'
+    rc=\$?
+    print -- \"\$rc \$FELL_BACK\"
+  " 2>/dev/null
+}
+
+eq "refusal (3) not retried"      "3 0"   "$(wrap_rc 3)"
+eq "task failure (1) not retried" "1 0"   "$(wrap_rc 1)"
+eq "usage error (2) not retried"  "2 0"   "$(wrap_rc 2)"
+eq "provider code (7) preserved"  "7 0"   "$(wrap_rc 7)"
+eq "infra (126) does fall back"   "0 1"   "$(wrap_rc 126)"
+
+echo "== wrapper: subcommands belong to the host CLI =="
+isprompt() { # isprompt <host> <arg>
+  zsh -c "source '$REPO_ROOT/shell/router.zsh'; _router_is_prompt '$1' '$2' && echo yes || echo no" 2>/dev/null
+}
+for sub in exec resume login logout help doctor review update mcp; do
+  eq "codex $sub passes through" no "$(isprompt codex "$sub")"
+done
+for sub in mcp config doctor update help; do
+  eq "claude $sub passes through" no "$(isprompt claude "$sub")"
+done
+eq "a real prompt routes"      yes "$(isprompt codex 'fix the login bug')"
+eq "one word is not a prompt"  no  "$(isprompt codex 'resume')"
+eq "unknown word routes"       yes "$(isprompt codex 'refactorise')"
+eq "flags pass through"        no  "$(isprompt codex '--resume')"
+
+echo "== cxr/ccr: 126 only when the router cannot start =="
+( ROUTER_CONFIG="$TMP/nope.json" bash "$REPO_ROOT/bin/cxr" -n "anything" >/dev/null 2>&1 )
+eq "cxr missing config -> 126" 126 "$?"
+( ROUTER_CONFIG="$TMP/nope.json" bash "$REPO_ROOT/bin/ccr" -n "anything" >/dev/null 2>&1 )
+eq "ccr missing config -> 126" 126 "$?"
+
+echo "== governor: refreshes stale quota before a model is chosen =="
+QJSON="$TMP/quota.json"
+set_quota() { printf '{"used_percent":%s}\n' "$1" > "$QJSON"; }
+python3 - "$ROUTER_CONFIG" "$QJSON" <<'PYQ'
+import json,sys
+c=json.load(open(sys.argv[1]))
+c['quota']['command']="cat %s" % sys.argv[2]
+c['quota']['max_age_seconds']=1
+json.dump(c,open(sys.argv[1],'w'),indent=2)
+PYQ
+
+age_state() { # backdate the stored reading so it counts as stale
+  python3 - "$ROUTER_STATE" "$1" <<'PYA'
+import json,sys,time
+p,age=sys.argv[1],int(sys.argv[2])
+d=json.load(open(p)); d['updated']=int(time.time())-age
+json.dump(d,open(p,'w'))
+PYA
+}
+
+set_quota 97
+governor_set NORMAL "quota:0%" 0 >/dev/null; age_state 600
+governor_refresh_if_stale 300
+eq "stale + 97% -> DEPLETED" DEPLETED "$(governor_state)"
+
+set_quota 70
+governor_set NORMAL "quota:0%" 0 >/dev/null; age_state 600
+governor_refresh_if_stale 300
+eq "stale + 70% -> CONSERVE" CONSERVE "$(governor_state)"
+
+set_quota 10
+governor_set NORMAL "quota:0%" 0 >/dev/null; age_state 600
+governor_refresh_if_stale 300
+eq "stale + 10% -> NORMAL" NORMAL "$(governor_state)"
+
+set_quota 99
+governor_set NORMAL "quota:0%" 0 >/dev/null
+governor_refresh_if_stale 3600
+eq "fresh reading is not re-probed" NORMAL "$(governor_state)"
+
+echo "== governor: a live override outranks the probe =="
+set_quota 10
+governor_set DEPLETED "rate-limit:codex" 3600 >/dev/null; age_state 600
+governor_refresh_if_stale 300
+eq "unexpired override kept" DEPLETED "$(governor_state)"
+
+set_quota 10
+governor_set CRITICAL "manual" 3600 >/dev/null; age_state 600
+governor_refresh_if_stale 300
+eq "manual override kept" CRITICAL "$(governor_state)"
+
+echo "== governor: a failing probe changes nothing =="
+python3 - "$ROUTER_CONFIG" <<'PYF'
+import json,sys
+c=json.load(open(sys.argv[1]))
+c['quota']['command']="exit 1"
+json.dump(c,open(sys.argv[1],'w'),indent=2)
+PYF
+governor_set CONSERVE "quota:60%" 0 >/dev/null; age_state 600
+governor_refresh_if_stale 1
+eq "probe failure is graceful" CONSERVE "$(governor_state)"
+
+python3 - "$ROUTER_CONFIG" <<'PYG'
+import json,sys
+c=json.load(open(sys.argv[1]))
+c['quota']['command']=""
+json.dump(c,open(sys.argv[1],'w'),indent=2)
+PYG
+governor_set NORMAL reset 0 >/dev/null
+governor_refresh_if_stale 1
+eq "no quota command is graceful" NORMAL "$(governor_state)"
+
+echo "== cxr: failover actually retries down the chain =="
+# Everything above dry-runs the chain. This exercises the execution path with a
+# stub `codex` on PATH, which is the only way to prove the retry semantics the
+# whole design rests on: a rate limit advances, a task failure does not.
+STUB="$TMP/stub"; mkdir -p "$STUB"
+CALLS="$TMP/calls.txt"
+
+make_stub() { # make_stub <behaviour>
+  cat > "$STUB/codex" <<STUBEOF
+#!/usr/bin/env bash
+# record which model each attempt used
+for a in "\$@"; do case "\$a" in model=*) echo "\${a#model=}" >> "$CALLS" ;; esac; done
+case "$1" in
+  always-limited) echo "Error: 429 rate limit reached" >&2; exit 1 ;;
+  limited-once)
+    if [ "\$(wc -l < "$CALLS" | tr -d ' ')" -le 1 ]; then
+      echo "Error: 429 rate limit reached" >&2; exit 1
+    fi
+    echo ok; exit 0 ;;
+  plain-failure) echo "compile error: undefined symbol" >&2; exit 2 ;;
+  ok) echo ok; exit 0 ;;
+esac
+STUBEOF
+  chmod +x "$STUB/codex"
+}
+
+run_cxr() { # run_cxr <tier> -> exit code; PATH-stubbed
+  : > "$CALLS"
+  ( cd "$PERSONAL" && PATH="$STUB:$PATH" \
+      bash "$REPO_ROOT/bin/cxr" -t "$1" "do a bounded thing" >/dev/null 2>&1 )
+  echo $?
+}
+calls()  { wc -l < "$CALLS" | tr -d ' '; }
+models() { tr '\n' ' ' < "$CALLS" | sed 's/ $//'; }
+
+governor_set NORMAL x 0 >/dev/null
+
+make_stub limited-once
+RC=$(run_cxr execution)
+eq "recovers on the next link"  0 "$RC"
+eq "took exactly two attempts"  2 "$(calls)"
+case "$(models)" in
+  *" "*) ok ;;
+  *) bad "second attempt used a different model" "two models" "$(models)" ;;
+esac
+
+governor_set NORMAL x 0 >/dev/null
+make_stub always-limited
+RC=$(run_cxr execution)
+eq "exhausted chain fails"        1 "$RC"
+eq "tried every link"             3 "$(calls)"
+case "$(governor_state)" in
+  NORMAL) bad "rate limits escalate the governor" "not NORMAL" "NORMAL" ;;
+  *) ok ;;
+esac
+
+governor_set NORMAL x 0 >/dev/null
+make_stub plain-failure
+RC=$(run_cxr execution)
+eq "task failure is not retried"  2 "$RC"
+eq "only one attempt made"        1 "$(calls)"
+eq "governor untouched by a task failure" NORMAL "$(governor_state)"
+
+governor_set NORMAL x 0 >/dev/null
+make_stub ok
+RC=$(run_cxr trivial)
+eq "success runs once"            0 "$RC"
+eq "no needless retry"            1 "$(calls)"
+
+echo "== cxr: a rate-limited run is logged as such =="
+jq -e 'select(.action == "rate-limited")' "$ROUTER_LOG" >/dev/null 2>&1 && ok \
+  || bad "rate limit recorded in the log" "an entry" "none"
+governor_set NORMAL x 0 >/dev/null
+
 echo "== decisions log =="
 [ -s "$ROUTER_LOG" ] && ok || bad "log written" "lines" "empty"
 eq "log is valid jsonl" 0 "$(jq -e . "$ROUTER_LOG" >/dev/null 2>&1; echo $?)"

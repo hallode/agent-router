@@ -18,6 +18,11 @@ set -uo pipefail
 
 ROUTER_HOME="${ROUTER_HOME:-$HOME/.claude/router}"
 export ROUTER_CONFIG="${ROUTER_CONFIG:-$ROUTER_HOME/config.json}"
+# 126 = "the router could not start". The shell wrapper falls back only on this.
+for _lib in config.sh classify.sh governor.sh; do
+  [ -r "$ROUTER_HOME/lib/$_lib" ] || { echo "ccr: missing lib/$_lib" >&2; exit 126; }
+done
+[ -r "$ROUTER_CONFIG" ] || { echo "ccr: missing config $ROUTER_CONFIG" >&2; exit 126; }
 . "$ROUTER_HOME/lib/config.sh"
 . "$ROUTER_HOME/lib/classify.sh"
 . "$ROUTER_HOME/lib/governor.sh"

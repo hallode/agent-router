@@ -14,6 +14,12 @@ set -uo pipefail
 ROUTER_HOME="${ROUTER_HOME:-$HOME/.claude/router}"
 export ROUTER_CONFIG="${ROUTER_CONFIG:-$ROUTER_HOME/config.json}"
 ROUTER_LOG="${ROUTER_LOG:-$ROUTER_HOME/decisions.jsonl}"
+# 126 means "the router could not start"; the shell wrapper falls back only on
+# that code, so a deliberate refusal below is never turned into a real run.
+for _lib in config.sh classify.sh governor.sh workspace.sh; do
+  [ -r "$ROUTER_HOME/lib/$_lib" ] || { echo "cxr: missing lib/$_lib" >&2; exit 126; }
+done
+[ -r "$ROUTER_CONFIG" ] || { echo "cxr: missing config $ROUTER_CONFIG" >&2; exit 126; }
 . "$ROUTER_HOME/lib/config.sh"
 . "$ROUTER_HOME/lib/classify.sh"
 . "$ROUTER_HOME/lib/governor.sh"
@@ -78,6 +84,8 @@ else
 fi
 case "$TIER" in trivial|execution|reasoning) ;; *) TIER=execution ;; esac
 
+# Refresh from quota before choosing, so exhaustion is seen rather than guessed.
+governor_refresh_if_stale "$(jq -r '.quota.max_age_seconds // 300' "$ROUTER_CONFIG" 2>/dev/null)"
 STATE=$(governor_state)
 case "$STATE" in
   NORMAL|CONSERVE) START=0 ;;
