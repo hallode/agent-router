@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-router.sh — PreToolUse:Agent. Rewrites the subagent's model.
+# claude-subagent.sh — PreToolUse:Agent. Rewrites the subagent's model.
 #
 # This is the only place in Claude Code where a hook can *enforce* a model
 # choice: PreToolUse may rewrite tool input, and the Agent tool's explicit
@@ -68,6 +68,14 @@ case "$PROMPT" in
     exit 0
     ;;
 esac
+
+# An agent definition that names its own model was configured on purpose —
+# possibly by another tool that manages agents. Do not overrule it.
+DECLARED=$(router_agent_declared_model "$AGENT_TYPE" "${CWD:-$PWD}")
+if [ -n "$DECLARED" ]; then
+  log_decision "" "$DECLARED" "" "defer:declared"
+  exit 0
+fi
 
 TIER=$(classify_tier "$AGENT_TYPE" "$DESC $PROMPT") || exit 0
 STATE=$(governor_state)

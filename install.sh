@@ -47,6 +47,15 @@ echo
 echo "running tests..."
 bash "$DEST/tests/run.sh" | tail -3
 
+# The unit suite proves the logic; this proves the wiring on this machine.
+if [ -x "$DEST/tests/verify-install.sh" ]; then
+  echo
+  echo "verifying the installation..."
+  ROUTER_HOME="$DEST" bash "$DEST/tests/verify-install.sh" | tail -3 || {
+    echo "verify-install reported problems — read the output above before relying on it" >&2
+  }
+fi
+
 if [ "$WITH_AGENTS" -eq 1 ]; then
   mkdir -p "$HOME/.claude/agents"
   cp "$DEST"/agents/*.md "$HOME/.claude/agents/" 2>/dev/null || true
@@ -66,10 +75,10 @@ installed to $DEST
 1. Add to ~/.claude/settings.json:
 
   "hooks": {
-    "PreToolUse":       [{"matcher": "Agent", "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/agent-router.sh\\"", "timeout": 10}]}],
-    "UserPromptSubmit": [{"matcher": "",      "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/advisor.sh\\"",      "timeout": 10}]}],
-    "SessionStart":     [{"matcher": "",      "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/model-track.sh\\"",  "timeout": 5}]}],
-    "PostModelSwitch":  [{"matcher": "",      "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/model-track.sh\\"",  "timeout": 5}]}]
+    "PreToolUse":       [{"matcher": "Agent", "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/claude-subagent.sh\\"", "timeout": 10}]}],
+    "UserPromptSubmit": [{"matcher": "",      "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/claude-advisor.sh\\"",      "timeout": 10}]}],
+    "SessionStart":     [{"matcher": "",      "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/claude-session.sh\\"",  "timeout": 5}]}],
+    "PostModelSwitch":  [{"matcher": "",      "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/claude-session.sh\\"",  "timeout": 5}]}]
   }
 
 2. Start in dry-run and read the log for a few days:

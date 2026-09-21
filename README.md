@@ -210,13 +210,13 @@ Install the Codex side by adding to `~/.codex/config.toml`:
 [[hooks.SessionStart]]
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "$HOME/.claude/router/hooks/codex-hook.sh"
+command = "$HOME/.claude/router/hooks/codex-advisor.sh"
 timeout = 10
 
 [[hooks.UserPromptSubmit]]
 [[hooks.UserPromptSubmit.hooks]]
 type = "command"
-command = "$HOME/.claude/router/hooks/codex-hook.sh"
+command = "$HOME/.claude/router/hooks/codex-advisor.sh"
 timeout = 10
 ```
 

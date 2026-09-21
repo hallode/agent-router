@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# router-quota — report remaining quota as JSON, from whatever the host records.
+# codex-quota — report remaining quota as JSON, from whatever the host records.
 #
 # Codex writes its real rate-limit state into every session rollout: a 5-hour
 # primary window and a weekly secondary one, each with a used percentage and a

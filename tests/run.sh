@@ -160,7 +160,7 @@ eq "D reasoning" haiku  "$(governor_model reasoning)"
 governor_set NORMAL x 0 >/dev/null
 
 echo "== hook: routing end to end =="
-hook() { printf '%s' "$1" | bash "$REPO_ROOT/hooks/agent-router.sh"; }
+hook() { printf '%s' "$1" | bash "$REPO_ROOT/hooks/claude-subagent.sh"; }
 m() { printf '%s' "$1" | jq -r '.hookSpecificOutput.updatedInput.model // "NONE"'; }
 p() { printf '%s' "$1" | jq -r '.hookSpecificOutput.updatedInput.prompt // "NONE"'; }
 
@@ -274,7 +274,7 @@ rm -f "$TMP/proj/.agent-router.json"
 echo "== project override: hook honours it =="
 mkdir -p "$TMP/ovr"
 printf '%s' '{"degrade":{"NORMAL":{"trivial":"opus","execution":"opus","reasoning":"opus"}}}' > "$TMP/ovr/.agent-router.json"
-OUT=$(printf '{"tool_name":"Agent","cwd":"%s","tool_input":{"subagent_type":"general-purpose","prompt":"grep for TODO comments"}}' "$TMP/ovr" | bash "$REPO_ROOT/hooks/agent-router.sh")
+OUT=$(printf '{"tool_name":"Agent","cwd":"%s","tool_input":{"subagent_type":"general-purpose","prompt":"grep for TODO comments"}}' "$TMP/ovr" | bash "$REPO_ROOT/hooks/claude-subagent.sh")
 eq "repo forces opus" opus "$(m "$OUT")"
 rm -rf "$TMP/ovr"
 
@@ -295,7 +295,7 @@ bash "$REPO_ROOT/bin/ccr" >/dev/null 2>&1 </dev/null
 eq "no prompt is an error" 2 "$?"
 
 echo "== advisor: nudges only when it pays =="
-adv() { printf '%s' "$1" | bash "$REPO_ROOT/hooks/advisor.sh"; }
+adv() { printf '%s' "$1" | bash "$REPO_ROOT/hooks/claude-advisor.sh"; }
 ctx() { printf '%s' "$1" | jq -r '.hookSpecificOutput.additionalContext // ""'; }
 mkdir -p "$ROUTER_HOME_SESS"
 SESSD="$TMP/sessions"; mkdir -p "$SESSD"
@@ -511,7 +511,7 @@ jq -e 'select(.action == "rate-limited")' "$ROUTER_LOG" >/dev/null 2>&1 && ok \
 governor_set NORMAL x 0 >/dev/null
 
 echo "== codex hook: injects budget state, never a model =="
-chook() { printf '%s' "$1" | bash "$REPO_ROOT/hooks/codex-hook.sh"; }
+chook() { printf '%s' "$1" | bash "$REPO_ROOT/hooks/codex-advisor.sh"; }
 cctx()  { printf '%s' "$1" | jq -r '.hookSpecificOutput.additionalContext // ""'; }
 
 governor_set NORMAL x 0 >/dev/null
@@ -560,6 +560,30 @@ eq "unknown event silent" "" "$(chook '{"hook_event_name":"PreToolUse"}')"
 eq "garbage silent"       "" "$(chook 'not json')"
 eq "no stdin silent"      "" "$(chook '')"
 governor_set NORMAL x 0 >/dev/null
+
+echo "== defers to an agent that declares its own model =="
+# Another tool may manage agent definitions. An explicit model there is a
+# decision; the tier map is an inference, and inference must not overrule it.
+AG="$TMP/proj-agents"; mkdir -p "$AG/.claude/agents"
+mk_agent() { printf -- '---\nname: %s\nmodel: %s\n---\n\nbody\n' "$1" "$2" > "$AG/.claude/agents/$1.md"; }
+
+mk_agent declared-agent opus
+OUT=$(printf '{"tool_name":"Agent","cwd":"%s","tool_input":{"subagent_type":"declared-agent","prompt":"grep for TODO"}}' "$AG" | bash "$REPO_ROOT/hooks/claude-subagent.sh")
+eq "declared model left alone" "" "$OUT"
+
+mk_agent inherit-agent inherit
+OUT=$(printf '{"tool_name":"Agent","cwd":"%s","tool_input":{"subagent_type":"inherit-agent","prompt":"grep for TODO"}}' "$AG" | bash "$REPO_ROOT/hooks/claude-subagent.sh")
+eq "inherit means route it" haiku "$(m "$OUT")"
+
+mk_agent quoted-agent '"sonnet"'
+OUT=$(printf '{"tool_name":"Agent","cwd":"%s","tool_input":{"subagent_type":"quoted-agent","prompt":"grep for TODO"}}' "$AG" | bash "$REPO_ROOT/hooks/claude-subagent.sh")
+eq "quoted model also honoured" "" "$OUT"
+
+OUT=$(printf '{"tool_name":"Agent","cwd":"%s","tool_input":{"subagent_type":"no-such-agent","prompt":"grep for TODO"}}' "$AG" | bash "$REPO_ROOT/hooks/claude-subagent.sh")
+eq "missing definition still routes" haiku "$(m "$OUT")"
+
+eq "path traversal refused" "" "$(router_agent_declared_model "../../etc/passwd" "$AG")"
+eq "empty type is safe"     "" "$(router_agent_declared_model "" "$AG")"
 
 echo "== decisions log =="
 [ -s "$ROUTER_LOG" ] && ok || bad "log written" "lines" "empty"

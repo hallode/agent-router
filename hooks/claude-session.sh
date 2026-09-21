@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# model-track.sh — SessionStart / PostModelSwitch. Records the session's current
+# claude-session.sh — SessionStart / PostModelSwitch. Records the session's current
 # model so the advisor hook can compare it against what a prompt actually needs.
 # UserPromptSubmit does not carry the model, so it has to be remembered here.
 set -uo pipefail

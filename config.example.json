@@ -118,8 +118,8 @@
   },
   "codex_chains_comment": "Different models per tier, not one model at different efforts. List what your account offers: jq -r '.models[].slug' ~/.codex/models_cache.json",
   "quota": {
-    "comment": "router-quota reads Codex's own rate-limit records. Replace with any command printing JSON if your host exposes quota differently; empty disables the probe.",
-    "command": "$ROUTER_HOME/bin/router-quota",
+    "comment": "codex-quota reads Codex's own rate-limit records. Replace with any command printing JSON if your host exposes quota differently; empty disables the probe.",
+    "command": "$ROUTER_HOME/bin/codex-quota",
     "percent_jq": "[.. | objects | (.usedPercent // .used_percent // empty)] | max",
     "conserve_at": 60,
     "critical_at": 85,

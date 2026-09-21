@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# codex-hook.sh — Codex lifecycle hook. Handles SessionStart and UserPromptSubmit.
+# codex-advisor.sh — Codex lifecycle hook. Handles SessionStart and UserPromptSubmit.
 #
 # Codex's hook API is close to Claude Code's — PreToolUse can rewrite tool input
 # with the same `hookSpecificOutput.updatedInput` shape — with one difference
@@ -17,13 +17,13 @@
 #   [[hooks.SessionStart]]
 #   [[hooks.SessionStart.hooks]]
 #   type = "command"
-#   command = "$HOME/.claude/router/hooks/codex-hook.sh"
+#   command = "$HOME/.claude/router/hooks/codex-advisor.sh"
 #   timeout = 10
 #
 #   [[hooks.UserPromptSubmit]]
 #   [[hooks.UserPromptSubmit.hooks]]
 #   type = "command"
-#   command = "$HOME/.claude/router/hooks/codex-hook.sh"
+#   command = "$HOME/.claude/router/hooks/codex-advisor.sh"
 #   timeout = 10
 #
 # Fails open like every other hook here: any error exits 0 with no output.

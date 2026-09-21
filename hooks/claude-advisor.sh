@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# advisor.sh — UserPromptSubmit. The only automatic lever inside a live session.
+# claude-advisor.sh — UserPromptSubmit. The only automatic lever inside a live session.
 #
 # The subagent router is already fully automatic in the way a shell-command hook
 # is: installed once, fires on its own, nothing to invoke. The catch is what it
