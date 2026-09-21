@@ -187,11 +187,38 @@ set of tier names, one governor state file, and one decision log.
 | | Claude Code | Codex |
 |---|---|---|
 | pick the model from a prompt | `ccr` | `cxr` |
-| enforce a subagent's model | `PreToolUse` hook | — |
+| budget state injected each session | `SessionStart` hook | `SessionStart` hook |
+| warned when the budget is tight | `UserPromptSubmit` hook | `UserPromptSubmit` hook |
 | tier names | trivial / execution / reasoning | same |
 | governor state | shared | shared |
 | decision log | `decisions.jsonl` | same file, `host` field |
 | per-repo override | `.agent-router.json` | same file |
+| quota read before choosing | on rate-limit errors | real percentages |
+| **enforce a subagent's model** | **yes**, `PreToolUse` | **no** — see below |
+
+One asymmetry cannot be closed. Codex's hook API is otherwise close to Claude
+Code's — `PreToolUse` rewrites tool input with the same `updatedInput` shape —
+but its documentation is explicit that hooks cannot influence which model a
+subagent uses: `SubagentStart` carries only `systemMessage` and
+`additionalContext`. So subagent enforcement exists on one host and not the
+other, and this ships the context injection Codex *can* do rather than
+pretending the gap is not there.
+
+Install the Codex side by adding to `~/.codex/config.toml`:
+
+```toml
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "$HOME/.claude/router/hooks/codex-hook.sh"
+timeout = 10
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "$HOME/.claude/router/hooks/codex-hook.sh"
+timeout = 10
+```
 
 Because the governor state is shared, a rate limit on one host makes the other
 cheaper too — which is what you want when the two are backed by different

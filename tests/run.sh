@@ -510,6 +510,57 @@ jq -e 'select(.action == "rate-limited")' "$ROUTER_LOG" >/dev/null 2>&1 && ok \
   || bad "rate limit recorded in the log" "an entry" "none"
 governor_set NORMAL x 0 >/dev/null
 
+echo "== codex hook: injects budget state, never a model =="
+chook() { printf '%s' "$1" | bash "$REPO_ROOT/hooks/codex-hook.sh"; }
+cctx()  { printf '%s' "$1" | jq -r '.hookSpecificOutput.additionalContext // ""'; }
+
+governor_set NORMAL x 0 >/dev/null
+OUT=$(chook "{\"hook_event_name\":\"SessionStart\",\"cwd\":\"$PERSONAL\"}")
+case "$(cctx "$OUT")" in
+  *"budget state NORMAL"*) ok ;;
+  *) bad "SessionStart reports state" "NORMAL" "$(cctx "$OUT")" ;;
+esac
+eq "SessionStart names the right event" SessionStart \
+   "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.hookEventName')"
+
+# The one thing a Codex hook must never claim to do.
+case "$OUT" in
+  *updatedInput*|*'"model"'*) bad "codex hook must not set a model" "no model field" "$OUT" ;;
+  *) ok ;;
+esac
+
+governor_set CRITICAL x 0 >/dev/null
+OUT=$(chook "{\"hook_event_name\":\"SessionStart\",\"cwd\":\"$PERSONAL\"}")
+case "$(cctx "$OUT")" in
+  *CRITICAL*) ok ;;
+  *) bad "SessionStart escalates with the governor" "CRITICAL" "$(cctx "$OUT")" ;;
+esac
+
+echo "== codex hook: quiet unless it matters =="
+governor_set NORMAL x 0 >/dev/null
+eq "normal state says nothing" "" \
+   "$(chook "{\"hook_event_name\":\"UserPromptSubmit\",\"prompt\":\"add an endpoint\",\"cwd\":\"$PERSONAL\"}")"
+
+governor_set DEPLETED x 0 >/dev/null
+OUT=$(chook "{\"hook_event_name\":\"UserPromptSubmit\",\"prompt\":\"add an endpoint\",\"cwd\":\"$PERSONAL\"}")
+case "$(cctx "$OUT")" in
+  *DEPLETED*) ok ;;
+  *) bad "depleted state warns" "DEPLETED" "$(cctx "$OUT")" ;;
+esac
+
+echo "== codex hook: fails open =="
+governor_set DEPLETED x 0 >/dev/null
+eq "bypass prefix silent" "" \
+   "$(chook '{"hook_event_name":"UserPromptSubmit","prompt":"!! do the thing"}')"
+eq "slash command silent" "" \
+   "$(chook '{"hook_event_name":"UserPromptSubmit","prompt":"/status"}')"
+eq "empty prompt silent"  "" \
+   "$(chook '{"hook_event_name":"UserPromptSubmit","prompt":""}')"
+eq "unknown event silent" "" "$(chook '{"hook_event_name":"PreToolUse"}')"
+eq "garbage silent"       "" "$(chook 'not json')"
+eq "no stdin silent"      "" "$(chook '')"
+governor_set NORMAL x 0 >/dev/null
+
 echo "== decisions log =="
 [ -s "$ROUTER_LOG" ] && ok || bad "log written" "lines" "empty"
 eq "log is valid jsonl" 0 "$(jq -e . "$ROUTER_LOG" >/dev/null 2>&1; echo $?)"
