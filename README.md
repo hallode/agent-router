@@ -247,6 +247,38 @@ cxr "<task>"               # run a Codex task, with failover
 router-learn               # mine past sessions for what spend actually bought
 ```
 
+### When the router picks wrong
+
+Override it — but know that the override is the useful part:
+
+```sh
+cxr -t reasoning "<task>"   # force a tier for one run
+cxr -n "<task>"             # see the choice without running it
+```
+
+In Claude Code, `/model <name>` changes the session, and a `!!` prefix on a
+subagent prompt bypasses routing for that call.
+
+Both a forced tier and a `!!` bypass are recorded as **manual overrides**, kept
+separate from automatic decisions:
+
+```sh
+router stats
+```
+
+```
+--
+4  manual overrides (forced tier)
+1  manual bypasses (!!)
+Each one is a case the classifier got wrong. Worth reading:
+  reasoning  normalise the phone format across the importer
+```
+
+If one kind of task is always overridden, change the map instead of overriding
+forever — `agent_type_tiers` and `codex_chains` in the config, or a
+`.agent-router.json` for a single repository. `router why "<prompt>"` shows how
+anything classifies before you commit to it.
+
 ### Escape hatch
 
 Prefix a subagent prompt with `!!` and the router leaves it alone. The marker is

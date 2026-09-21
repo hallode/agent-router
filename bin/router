@@ -65,6 +65,14 @@ case "${1:-status}" in
             | sort_by(-.n) | .[] | "\(.n)\t\(.host)\t\(.model)"' "$ROUTER_LOG"
     printf -- '--\n'
     jq -rs 'group_by(.action) | map({a:.[0].action,n:length}) | sort_by(-.n) | .[] | "\(.n)\t\(.a)"' "$ROUTER_LOG"
+    # A hand-forced tier is the strongest evidence the classifier was wrong.
+    FORCED=$(jq -rs '[.[] | select(.tier_source == "forced")] | length' "$ROUTER_LOG" 2>/dev/null)
+    BYPASS=$(jq -rs '[.[] | select(.action == "bypass")] | length' "$ROUTER_LOG" 2>/dev/null)
+    if [ "${FORCED:-0}" -gt 0 ] 2>/dev/null || [ "${BYPASS:-0}" -gt 0 ] 2>/dev/null; then
+      printf -- '--\n%s\tmanual overrides (forced tier)\n%s\tmanual bypasses (!!)\n' "${FORCED:-0}" "${BYPASS:-0}"
+      printf 'Each one is a case the classifier got wrong. Worth reading:\n'
+      jq -rs '[.[] | select(.tier_source == "forced" or .action == "bypass")][-5:][] | "  \(.tier)\t\(.description // "-")"' "$ROUTER_LOG" 2>/dev/null
+    fi
     ;;
   enforce)
     v="${2:?true|false}"; tmp="$ROUTER_CONFIG.tmp.$$"

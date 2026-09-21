@@ -70,7 +70,12 @@ fi
 MISMATCH=$(workspace_mismatch "$PWD")
 [ -n "$MISMATCH" ] && printf '\033[33m[cxr] warning: %s\033[0m\n' "$MISMATCH" >&2
 
-[ -z "$TIER" ] && TIER=$(classify_tier "" "$PROMPT")
+if [ -z "$TIER" ]; then
+  TIER=$(classify_tier "" "$PROMPT")
+  TIER_SOURCE=auto
+else
+  TIER_SOURCE=forced
+fi
 case "$TIER" in trivial|execution|reasoning) ;; *) TIER=execution ;; esac
 
 STATE=$(governor_state)
@@ -93,7 +98,8 @@ log_decision() {
   jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg host codex \
      --arg tier "$TIER" --arg model "${1:-}" --arg effort "${2:-}" \
      --arg st "$STATE" --arg act "${3:-}" --arg d "${PROMPT:0:120}" \
-     '{ts:$ts,host:$host,tier:$tier,model:$model,effort:$effort,state:$st,action:$act,description:$d}' \
+     --arg src "${TIER_SOURCE:-auto}" \
+     '{ts:$ts,host:$host,tier:$tier,tier_source:$src,model:$model,effort:$effort,state:$st,action:$act,description:$d}' \
      >> "$ROUTER_LOG" 2>/dev/null || true
 }
 
