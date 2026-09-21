@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# router-quota — report remaining quota as JSON, from whatever the host records.
+#
+# Codex writes its real rate-limit state into every session rollout: a 5-hour
+# primary window and a weekly secondary one, each with a used percentage and a
+# reset timestamp. That is an actual quota reading, not an estimate, and it is
+# sitting on disk after every run.
+#
+# Claude Code keeps no comparable figure in its transcripts, so the Claude side
+# is driven by observed rate-limit errors instead. That asymmetry is in the host,
+# not the router: both sides degrade, one just sees the wall coming earlier.
+#
+# Output (empty object when nothing is known):
+#   {"source":"codex","used_percent":45,"primary":{...},"secondary":{...}}
+
+set -uo pipefail
+CODEX_SESSIONS="${CODEX_SESSIONS:-$HOME/.codex/sessions}"
+
+command -v jq >/dev/null 2>&1 || { echo '{}'; exit 0; }
+[ -d "$CODEX_SESSIONS" ] || { echo '{}'; exit 0; }
+
+# Newest rollout first; a session may end before any rate-limit record lands, so
+# walk back a few until one carries a reading.
+found=""
+for f in $(ls -t "$CODEX_SESSIONS"/*/*/*/*.jsonl 2>/dev/null | head -8); do
+  found=$(jq -rc '
+    select(.payload.rate_limits != null)
+    | .payload.rate_limits
+    | select(.primary.used_percent != null)
+    | {
+        source: "codex",
+        used_percent: ([.primary.used_percent, .secondary.used_percent]
+                       | map(select(. != null)) | max),
+        plan: .plan_type,
+        limit_reached: .rate_limit_reached_type,
+        primary:   {used_percent: .primary.used_percent,
+                    window_minutes: .primary.window_minutes,
+                    resets_at: .primary.resets_at},
+        secondary: {used_percent: .secondary.used_percent,
+                    window_minutes: .secondary.window_minutes,
+                    resets_at: .secondary.resets_at}
+      }' "$f" 2>/dev/null | tail -1)
+  [ -n "$found" ] && break
+done
+
+[ -z "$found" ] && { echo '{}'; exit 0; }
+printf '%s\n' "$found"

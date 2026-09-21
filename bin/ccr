@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# ccr — launch Claude Code on the model the opening prompt actually needs.
+#
+# A session's model can be chosen at launch and never again: no hook can switch
+# it mid-session, and PreModelSwitch can only block a switch someone else asked
+# for. So this is the one place prompt-based model selection works for the main
+# session — start it on the right model rather than trying to correct later.
+#
+#   ccr "why is the parcel sync deadlocking"   -> opus
+#   ccr "add a POST /invoices endpoint"        -> sonnet
+#   ccr "rename ctx2 to reqCtx everywhere"     -> haiku
+#
+# Subagents spawned inside that session are still routed by the PreToolUse hook,
+# so the two layers compose: this picks the orchestrator, the hook prices the
+# workers.
+
+set -uo pipefail
+
+ROUTER_HOME="${ROUTER_HOME:-$HOME/.claude/router}"
+export ROUTER_CONFIG="${ROUTER_CONFIG:-$ROUTER_HOME/config.json}"
+. "$ROUTER_HOME/lib/config.sh"
+. "$ROUTER_HOME/lib/classify.sh"
+. "$ROUTER_HOME/lib/governor.sh"
+
+usage() {
+  cat <<'USAGE'
+ccr — start Claude Code on the model the prompt needs
+
+  ccr "prompt"              classify, then launch claude on that model
+  ccr -t reasoning "prompt" force a tier
+  ccr -n "prompt"           dry run: print the decision, launch nothing
+  ccr -- <claude args>      everything after -- is passed to claude
+
+The tier map is the same one the subagent router uses, and the governor
+degrades it the same way, so a launch during a rate limit starts cheap
+instead of failing.
+USAGE
+}
+
+TIER=""; DRY=0; PROMPT=""; EXTRA=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -t|--tier) TIER="${2:-}"; shift 2 ;;
+    -n|--dry-run) DRY=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; EXTRA=("$@"); break ;;
+    *) if [ -z "$PROMPT" ]; then PROMPT="$1"; else PROMPT="$PROMPT $1"; fi; shift ;;
+  esac
+done
+
+[ -z "$PROMPT" ] && [ ! -t 0 ] && PROMPT=$(cat)
+if [ -z "$PROMPT" ]; then usage; exit 2; fi
+
+EFFECTIVE=$(router_effective_config "$PWD")
+if router_is_temp_config "$EFFECTIVE"; then
+  ROUTER_CONFIG="$EFFECTIVE"
+  trap 'rm -f "$EFFECTIVE"' EXIT
+fi
+
+[ -z "$TIER" ] && TIER=$(classify_tier "" "$PROMPT")
+case "$TIER" in trivial|execution|reasoning) ;; *) TIER=execution ;; esac
+
+STATE=$(governor_state)
+MODEL=$(governor_model "$TIER")
+[ -n "$MODEL" ] || MODEL=sonnet
+
+printf '\033[2m[ccr] tier=%s state=%s model=%s\033[0m\n' "$TIER" "$STATE" "$MODEL" >&2
+
+if [ "$DRY" -eq 1 ]; then
+  printf '[ccr] would run: claude --model %s "%s"\n' "$MODEL" "${PROMPT:0:60}"
+  exit 0
+fi
+
+command -v claude >/dev/null 2>&1 || { echo "ccr: claude not found in PATH" >&2; exit 127; }
+
+if [ "${#EXTRA[@]}" -gt 0 ]; then
+  exec claude --model "$MODEL" "${EXTRA[@]}" "$PROMPT"
+else
+  exec claude --model "$MODEL" "$PROMPT"
+fi

@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""router-learn — mine past Claude Code sessions for what a model actually cost.
+
+Every assistant turn in ~/.claude/projects/**/*.jsonl records the model, the
+effort level, and full token usage. Pair each turn with the user prompt that
+triggered it and you can ask the only question that matters: for the work you
+actually do, where did the spend not buy anything?
+
+Read-only. Prints a report and suggested config edits; changes nothing.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from collections import defaultdict
+
+PROJECTS = os.path.expanduser("~/.claude/projects")
+CODEX_SESSIONS = os.path.expanduser("~/.codex/sessions")
+ROUTER = os.path.expanduser("~/.claude/router")
+
+# Rough public per-MTok rates, only ever used to compare tiers against each
+# other. Absolute figures here are not a bill.
+RATES = {  # (input, output)
+    "opus": (15.0, 75.0),
+    "sonnet": (3.0, 15.0),
+    "haiku": (1.0, 5.0),
+}
+
+
+def family(model: str) -> str:
+    m = (model or "").lower()
+    for f in ("opus", "sonnet", "haiku", "fable"):
+        if f in m:
+            return f
+    return "other"
+
+
+def classify(agent_type: str, text: str) -> str:
+    """Call the shipped bash classifier so the report never drifts from it."""
+    script = (
+        f'. "{ROUTER}/lib/classify.sh"; '
+        f'ROUTER_CONFIG="{ROUTER}/config.json" classify_tier "$1" "$2"'
+    )
+    try:
+        out = subprocess.run(
+            ["bash", "-c", script, "_", agent_type, text[:4000]],
+            capture_output=True, text=True, timeout=10,
+        )
+        return out.stdout.strip() or "execution"
+    except Exception:
+        return "execution"
+
+
+# A follow-up that looks like the user correcting the previous answer. Indonesian
+# and English, since the transcripts hold both.
+DISSATISFIED = re.compile(
+    r"\b(salah|bukan|ulang|masih\s+(error|gagal|salah)|kenapa\s+(lo|lu|kamu)|"
+    r"gak\s+(bener|sesuai|jalan)|ga\s+(bener|sesuai|jalan)|jangan|harusnya|"
+    r"that's wrong|not what i|revert|undo|you (broke|missed)|still (failing|broken))",
+    re.I,
+)
+
+
+def text_of(msg) -> str:
+    c = msg.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return " ".join(b.get("text", "") for b in c if isinstance(b, dict))
+    return ""
+
+
+def main() -> int:
+    if not os.path.isdir(PROJECTS):
+        print(f"no transcripts at {PROJECTS}", file=sys.stderr)
+        return 1
+
+    files = []
+    for root, _dirs, names in os.walk(PROJECTS):
+        files.extend(os.path.join(root, n) for n in names if n.endswith(".jsonl"))
+
+    by_combo = defaultdict(lambda: {"turns": 0, "in": 0, "out": 0, "think": 0})
+    tier_vs_model = defaultdict(lambda: defaultdict(int))
+    overkill = []          # trivial prompt answered by an expensive family
+    dissatisfied = defaultdict(lambda: defaultdict(int))
+    sessions = 0
+
+    for path in files:
+        sessions += 1
+        pending_prompt = None
+        last_combo = None
+        try:
+            fh = open(path, errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                t = rec.get("type")
+                msg = rec.get("message") or {}
+
+                if t == "user":
+                    body = text_of(msg)
+                    if body and not body.startswith("<"):
+                        if last_combo and DISSATISFIED.search(body[:300]):
+                            dissatisfied[last_combo[0]][last_combo[1]] += 1
+                        pending_prompt = body
+                    continue
+
+                if t != "assistant":
+                    continue
+
+                model = msg.get("model") or ""
+                if not model:
+                    continue
+                fam = family(model)
+                eff = rec.get("effort") or "-"
+                combo = (fam, eff)
+                last_combo = combo
+
+                u = msg.get("usage") or {}
+                rec_in = (u.get("input_tokens") or 0) + \
+                         (u.get("cache_read_input_tokens") or 0) + \
+                         (u.get("cache_creation_input_tokens") or 0)
+                rec_out = u.get("output_tokens") or 0
+                think = ((u.get("output_tokens_details") or {}).get("thinking_tokens")) or 0
+
+                s = by_combo[combo]
+                s["turns"] += 1
+                s["in"] += rec_in
+                s["out"] += rec_out
+                s["think"] += think
+
+                if pending_prompt:
+                    tier = classify("", pending_prompt)
+                    tier_vs_model[tier][fam] += 1
+                    if tier == "trivial" and fam in ("opus", "fable"):
+                        overkill.append((rec_out, pending_prompt[:90].replace("\n", " ")))
+                    pending_prompt = None
+
+    if not by_combo:
+        print("no assistant turns found")
+        return 0
+
+    print(f"sessions scanned: {sessions}\n")
+
+    print("=== spend by model and effort ===")
+    print(f"{'model':8} {'effort':7} {'turns':>7} {'out tok':>12} {'thinking':>11} {'~cost':>9}")
+    total = 0.0
+    rows = sorted(by_combo.items(), key=lambda kv: -kv[1]["out"])
+    for (fam, eff), s in rows:
+        rin, rout = RATES.get(fam, (3.0, 15.0))
+        cost = s["in"] / 1e6 * rin + s["out"] / 1e6 * rout
+        total += cost
+        print(f"{fam:8} {eff:7} {s['turns']:>7} {s['out']:>12,} {s['think']:>11,} {cost:>8.2f}")
+    print(f"{'':24}{'':>7} {'':>12} {'total':>11} {total:>8.2f}\n")
+
+    print("=== what the classifier would have chosen vs what ran ===")
+    print(f"{'tier':10} {'opus':>7} {'sonnet':>7} {'haiku':>7} {'other':>7}")
+    for tier in ("trivial", "execution", "reasoning"):
+        r = tier_vs_model.get(tier, {})
+        print(f"{tier:10} {r.get('opus',0):>7} {r.get('sonnet',0):>7} "
+              f"{r.get('haiku',0):>7} {r.get('other',0)+r.get('fable',0):>7}")
+    print()
+
+    if overkill:
+        overkill.sort(reverse=True)
+        print(f"=== mechanical prompts answered by a top-tier model ({len(overkill)}) ===")
+        for out_tok, prompt in overkill[:12]:
+            print(f"  {out_tok:>7,} out  {prompt}")
+        print()
+
+    if dissatisfied:
+        print("=== follow-ups that read as corrections, by what had just run ===")
+        print("    (a proxy for 'that model/effort was not enough', not proof)")
+        flat = [((f, e), n) for f, d in dissatisfied.items() for e, n in d.items()]
+        for (fam, eff), n in sorted(flat, key=lambda kv: -kv[1])[:10]:
+            turns = by_combo.get((fam, eff), {}).get("turns", 0)
+            rate = f"{n / turns * 100:.1f}%" if turns else "-"
+            print(f"  {fam:8} {eff:7} {n:>5} corrections / {turns:>6} turns  {rate:>7}")
+        print()
+
+    codex_report()
+    suggest(by_combo, tier_vs_model, dissatisfied, apply="--apply" in sys.argv)
+    return 0
+
+
+def codex_report():
+    """Codex keeps its own accounting: per-turn token counts and, unlike Claude
+    Code, a real rate-limit reading. Reported separately because the two hosts
+    record different things — pretending otherwise would invent parity."""
+    if not os.path.isdir(CODEX_SESSIONS):
+        return
+    files = []
+    for root, _dirs, names in os.walk(CODEX_SESSIONS):
+        files.extend(os.path.join(root, n) for n in names if n.endswith(".jsonl"))
+    if not files:
+        return
+
+    turns = inp = out = reason = 0
+    latest_limits = None
+    latest_mtime = -1.0
+    for path in files:
+        try:
+            mtime = os.path.getmtime(path)
+            fh = open(path, errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if '"token_count"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                pay = rec.get("payload") or {}
+                last = ((pay.get("info") or {}).get("last_token_usage")) or {}
+                if last:
+                    turns += 1
+                    inp += last.get("input_tokens") or 0
+                    out += last.get("output_tokens") or 0
+                    reason += last.get("reasoning_output_tokens") or 0
+                rl = pay.get("rate_limits")
+                if rl and (rl.get("primary") or {}).get("used_percent") is not None:
+                    if mtime >= latest_mtime:
+                        latest_mtime, latest_limits = mtime, rl
+
+    if not turns:
+        return
+    print(f"\n=== codex: {len(files)} sessions, {turns} accounted turns ===")
+    print(f"  input {inp:,}   output {out:,}   reasoning {reason:,}")
+    if out:
+        print(f"  reasoning is {reason / out * 100:.0f}% of output tokens")
+    if latest_limits:
+        pri = latest_limits.get("primary") or {}
+        sec = latest_limits.get("secondary") or {}
+        print(f"  last seen quota: primary {pri.get('used_percent')}% "
+              f"({(pri.get('window_minutes') or 0)//60}h window), "
+              f"secondary {sec.get('used_percent')}% "
+              f"({(sec.get('window_minutes') or 0)//1440}d window)")
+        print("  Codex publishes this reading; Claude Code does not. The governor")
+        print("  therefore sees a Codex wall coming and only reacts to a Claude one.")
+
+
+def suggest(by_combo, tier_vs_model, dissatisfied, apply=False):
+    """Turn the measurements into proposals. Never silently applies anything."""
+    print("=== suggestions ===")
+
+    # 1. What routing would have saved, on this history, at observed volumes.
+    exec_rows = tier_vs_model.get("execution", {})
+    triv_rows = tier_vs_model.get("trivial", {})
+    exp_exec = exec_rows.get("opus", 0) + exec_rows.get("fable", 0)
+    exp_triv = triv_rows.get("opus", 0) + triv_rows.get("fable", 0)
+
+    out_by_fam = defaultdict(int)
+    turns_by_fam = defaultdict(int)
+    for (fam, _eff), st in by_combo.items():
+        out_by_fam[fam] += st["out"]
+        turns_by_fam[fam] += st["turns"]
+    avg_opus_out = out_by_fam["opus"] / turns_by_fam["opus"] if turns_by_fam["opus"] else 0
+
+    if exp_exec or exp_triv:
+        saved = (exp_exec * avg_opus_out / 1e6) * (RATES["opus"][1] - RATES["sonnet"][1])
+        saved += (exp_triv * avg_opus_out / 1e6) * (RATES["opus"][1] - RATES["haiku"][1])
+        print(f"  routing would have moved {exp_exec} execution-class and "
+              f"{exp_triv} mechanical turns off the top tier")
+        print(f"  rough output-side saving on this history: ~{saved:,.0f} cost units")
+        print("  (turn count is the honest number here; cost units assume public rates)")
+
+    # 2. Effort, judged by correction rate against the overall baseline.
+    total_corr = sum(n for d in dissatisfied.values() for n in d.values())
+    total_turns = sum(st["turns"] for st in by_combo.values())
+    baseline = (total_corr / total_turns) if total_turns else 0.0
+    print(f"\n  correction baseline across everything: {baseline*100:.2f}%")
+
+    notable = []
+    for (fam, eff), st in by_combo.items():
+        turns = st["turns"]
+        if turns < 200:      # too few turns to say anything
+            continue
+        corr = dissatisfied.get(fam, {}).get(eff, 0)
+        rate = corr / turns
+        if baseline > 0 and rate > baseline * 2:
+            notable.append((fam, eff, turns, rate, "above baseline — consider more effort"))
+        elif rate <= baseline and fam != "opus":
+            notable.append((fam, eff, turns, rate, "at or below baseline — safe to lean on"))
+    if notable:
+        for fam, eff, turns, rate, note in sorted(notable, key=lambda r: -r[2]):
+            print(f"  {fam:7} {eff:7} {turns:>6} turns  {rate*100:>5.2f}%  {note}")
+    else:
+        print("  no combination stands out; correction rates are flat")
+
+    print("\n  Correction detection is a keyword proxy, not a verdict. Where it")
+    print("  disagrees with how the model felt to use, trust how it felt.")
+
+    # 3. The one edit that usually dominates: effort tiering in settings.json.
+    print("\n=== suggested ~/.claude/settings.json ===")
+    print("""  "modelSettings": {
+    "claude-opus-5":   {"effortLevel": "xhigh"},
+    "claude-sonnet-5": {"effortLevel": "high"},
+    "claude-haiku-4-5-20251001": {"effortLevel": "low"}
+  }""")
+    print("  Tune the middle tier by how its output lands, not by what looks frugal.")
+
+    if apply:
+        print("\n--apply only ever touches the router's own config; the settings.json")
+        print("block above is printed for you to paste, deliberately.")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

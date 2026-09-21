@@ -1,0 +1,9 @@
+# Local install state — never committed.
+config.json
+state.json
+decisions.jsonl
+sessions/
+*.tmp.*
+.DS_Store
+.idea/
+.vscode/

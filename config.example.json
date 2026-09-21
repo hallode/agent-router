@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "enforce": true,
+  "bypass_prefix": "!!",
+  "tiers": [
+    "trivial",
+    "execution",
+    "reasoning"
+  ],
+  "degrade": {
+    "NORMAL": {
+      "trivial": "haiku",
+      "execution": "sonnet",
+      "reasoning": "opus"
+    },
+    "CONSERVE": {
+      "trivial": "haiku",
+      "execution": "sonnet",
+      "reasoning": "sonnet"
+    },
+    "CRITICAL": {
+      "trivial": "haiku",
+      "execution": "haiku",
+      "reasoning": "sonnet"
+    },
+    "DEPLETED": {
+      "trivial": "haiku",
+      "execution": "haiku",
+      "reasoning": "haiku"
+    }
+  },
+  "agent_type_tiers": {
+    "statusline-setup": "trivial",
+    "Explore": "execution",
+    "Plan": "reasoning",
+    "claude-code-guide": "execution",
+    "cc-explorer": "trivial",
+    "cc-planner": "reasoning",
+    "cc-worker": "execution",
+    "cc-reviewer": "reasoning",
+    "cc_explorer": "trivial",
+    "cc_planner": "reasoning",
+    "cc_worker": "execution",
+    "cc_reviewer": "reasoning",
+    "router-explorer": "trivial",
+    "router-worker": "execution",
+    "router-reviewer": "reasoning",
+    "router-planner": "reasoning"
+  },
+  "codex_chains": {
+    "reasoning": [
+      {
+        "model": "<your-strongest>",
+        "effort": "high"
+      },
+      {
+        "model": "<your-second>",
+        "effort": "high"
+      },
+      {
+        "model": "<your-reserve>",
+        "effort": "high"
+      }
+    ],
+    "execution": [
+      {
+        "model": "<your-mid-tier>",
+        "effort": "medium"
+      },
+      {
+        "model": "<your-other-mid>",
+        "effort": "medium"
+      },
+      {
+        "model": "<your-reserve>",
+        "effort": "medium"
+      }
+    ],
+    "trivial": [
+      {
+        "model": "<your-smallest>",
+        "effort": "low"
+      },
+      {
+        "model": "<your-older-small>",
+        "effort": "low"
+      },
+      {
+        "model": "<your-reserve>",
+        "effort": "low"
+      }
+    ]
+  },
+  "workspaces": {
+    "enabled": false,
+    "comment": "Optional. Only useful if you hold more than one subscription and care which one a directory bills. Labels are arbitrary; the router only compares them.",
+    "rules": [
+      {
+        "prefix": "$HOME/src/oss",
+        "account": "personal"
+      },
+      {
+        "prefix": "$HOME/src/acme",
+        "account": "employer"
+      }
+    ],
+    "default": "",
+    "remote_patterns": [
+      {
+        "pattern": "git\\.acme\\.example",
+        "account": "employer"
+      }
+    ]
+  },
+  "codex": {
+    "comment": "allowed_accounts is empty by default, which means cxr never refuses. Populate it only if workspaces.enabled is true.",
+    "allowed_accounts": []
+  },
+  "codex_chains_comment": "Different models per tier, not one model at different efforts. List what your account offers: jq -r '.models[].slug' ~/.codex/models_cache.json",
+  "quota": {
+    "comment": "router-quota reads Codex's own rate-limit records. Replace with any command printing JSON if your host exposes quota differently; empty disables the probe.",
+    "command": "$ROUTER_HOME/bin/router-quota",
+    "percent_jq": "[.. | objects | (.usedPercent // .used_percent // empty)] | max",
+    "conserve_at": 60,
+    "critical_at": 85,
+    "depleted_at": 95,
+    "ttl_seconds": 900
+  },
+  "advisor": {
+    "comment": "delegate=false silences the nudge that asks an expensive session to hand bounded work to a subagent.",
+    "delegate": true
+  }
+}

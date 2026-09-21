@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# cxr — Codex profile router with automatic failover.
+#
+# Classifies the task, picks a model+effort from the tier's chain, and runs
+# `codex exec`. If the provider answers with a rate limit, it advances to the
+# next link in the chain instead of dying — the case this whole thing exists
+# for: work half-done, limit hit, reset hours away.
+#
+# Chains are yours to define in config: model availability differs per account,
+# so nothing sensible ships as a default.
+
+set -uo pipefail
+
+ROUTER_HOME="${ROUTER_HOME:-$HOME/.claude/router}"
+export ROUTER_CONFIG="${ROUTER_CONFIG:-$ROUTER_HOME/config.json}"
+ROUTER_LOG="${ROUTER_LOG:-$ROUTER_HOME/decisions.jsonl}"
+. "$ROUTER_HOME/lib/config.sh"
+. "$ROUTER_HOME/lib/classify.sh"
+. "$ROUTER_HOME/lib/governor.sh"
+. "$ROUTER_HOME/lib/workspace.sh"
+
+usage() {
+  cat <<'USAGE'
+cxr — Codex router with failover
+
+  cxr "task"                run with the auto-picked model
+  cxr -t reasoning "task"   force a tier (trivial|execution|reasoning)
+  cxr -n "task"             dry run: print the chain, call nothing
+  cxr -- <codex args>       everything after -- goes to `codex exec`
+  cxr -f "task"             ignore the workspace account guard
+
+If workspaces are configured with codex.allowed_accounts, cxr refuses to run
+in a directory that bills a different account. With no such config -- the
+default -- there is no guard and -f is never needed.
+
+Tiers map to chains in ~/.claude/router/config.json. On a rate limit, cxr
+advances down the chain and records the event with the governor.
+USAGE
+}
+
+EFFECTIVE=$(router_effective_config "$PWD")
+if router_is_temp_config "$EFFECTIVE"; then
+  ROUTER_CONFIG="$EFFECTIVE"
+  trap 'rm -f "$EFFECTIVE"' EXIT
+fi
+
+TIER=""; DRY=0; FORCE=0; PROMPT=""; EXTRA=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -t|--tier) TIER="${2:-}"; shift 2 ;;
+    -n|--dry-run) DRY=1; shift ;;
+    -f|--force) FORCE=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; EXTRA=("$@"); break ;;
+    *) if [ -z "$PROMPT" ]; then PROMPT="$1"; else PROMPT="$PROMPT $1"; fi; shift ;;
+  esac
+done
+
+[ -z "$PROMPT" ] && [ ! -t 0 ] && PROMPT=$(cat)
+if [ -z "$PROMPT" ]; then usage; exit 2; fi
+
+if [ "$FORCE" -eq 0 ] && ! workspace_account_allowed codex "$PWD"; then
+  ACCT=$(workspace_account "$PWD")
+  ALLOWED=$(jq -r '.codex.allowed_accounts // [] | join(", ")' "$ROUTER_CONFIG" 2>/dev/null)
+  printf '\033[31m[cxr] refusing: this directory bills the "%s" account.\033[0m\n' "$ACCT" >&2
+  printf '      cxr is configured for: %s\n' "$ALLOWED" >&2
+  printf '      Override with -f, or edit workspaces in the config.\n' >&2
+  exit 3
+fi
+MISMATCH=$(workspace_mismatch "$PWD")
+[ -n "$MISMATCH" ] && printf '\033[33m[cxr] warning: %s\033[0m\n' "$MISMATCH" >&2
+
+[ -z "$TIER" ] && TIER=$(classify_tier "" "$PROMPT")
+case "$TIER" in trivial|execution|reasoning) ;; *) TIER=execution ;; esac
+
+STATE=$(governor_state)
+case "$STATE" in
+  NORMAL|CONSERVE) START=0 ;;
+  CRITICAL)        START=1 ;;
+  *)               START=2 ;;
+esac
+
+LEN=$(jq -r --arg t "$TIER" '.codex_chains[$t] | length' "$ROUTER_CONFIG" 2>/dev/null)
+[ -z "$LEN" ] || [ "$LEN" = "null" ] && LEN=0
+if [ "$LEN" -eq 0 ]; then echo "cxr: no chain for tier $TIER" >&2; exit 2; fi
+[ "$START" -ge "$LEN" ] && START=$((LEN - 1))
+
+printf '\033[2m[cxr] tier=%s state=%s chain=%s start=%s\033[0m\n' \
+  "$TIER" "$STATE" "$LEN" "$START" >&2
+
+# Same record shape the Claude hook writes, so `router stats` sees both hosts.
+log_decision() {
+  jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg host codex \
+     --arg tier "$TIER" --arg model "${1:-}" --arg effort "${2:-}" \
+     --arg st "$STATE" --arg act "${3:-}" --arg d "${PROMPT:0:120}" \
+     '{ts:$ts,host:$host,tier:$tier,model:$model,effort:$effort,state:$st,action:$act,description:$d}' \
+     >> "$ROUTER_LOG" 2>/dev/null || true
+}
+
+is_rate_limited() {
+  grep -qiE 'rate[ _-]?limit|429|quota exceeded|usage limit|too many requests|limit reached|resets? (in|at)' "$1"
+}
+
+i=$START
+while [ "$i" -lt "$LEN" ]; do
+  MODEL=$(jq -r --arg t "$TIER" --argjson i "$i" '.codex_chains[$t][$i].model'  "$ROUTER_CONFIG")
+  EFFORT=$(jq -r --arg t "$TIER" --argjson i "$i" '.codex_chains[$t][$i].effort' "$ROUTER_CONFIG")
+
+  if [ "$DRY" -eq 1 ]; then
+    printf '[cxr] would run: codex exec -c model=%s -c model_reasoning_effort=%s\n' "$MODEL" "$EFFORT"
+    i=$((i + 1)); continue
+  fi
+
+  log_decision "$MODEL" "$EFFORT" "route"
+
+  printf '\033[2m[cxr] -> %s @ %s\033[0m\n' "$MODEL" "$EFFORT" >&2
+  ERRLOG=$(mktemp)
+  if [ "${#EXTRA[@]}" -gt 0 ]; then
+    codex exec -c "model=$MODEL" -c "model_reasoning_effort=$EFFORT" "${EXTRA[@]}" "$PROMPT" 2> >(tee "$ERRLOG" >&2)
+  else
+    codex exec -c "model=$MODEL" -c "model_reasoning_effort=$EFFORT" "$PROMPT" 2> >(tee "$ERRLOG" >&2)
+  fi
+  RC=$?
+
+  if [ "$RC" -eq 0 ]; then rm -f "$ERRLOG"; exit 0; fi
+  if is_rate_limited "$ERRLOG"; then
+    printf '\033[33m[cxr] %s rate-limited — falling through\033[0m\n' "$MODEL" >&2
+    log_decision "$MODEL" "$EFFORT" "rate-limited"
+    governor_record_limit "codex:$MODEL" >/dev/null
+    rm -f "$ERRLOG"; i=$((i + 1)); continue
+  fi
+  rm -f "$ERRLOG"
+  exit "$RC"
+done
+
+[ "$DRY" -eq 1 ] && exit 0
+echo "cxr: whole $TIER chain exhausted" >&2
+exit 1
