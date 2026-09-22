@@ -70,9 +70,30 @@ _router_is_prompt() {
   return 0
 }
 
+# A bare launch — `codex` or `claude` with nothing after it — is the common case
+# and has no prompt to classify. Tier routing cannot help, but the budget still
+# can: when quota is tight, start on the cheaper model instead of discovering the
+# limit halfway through. When the budget is fine, change nothing.
+_router_bare_launch() {
+  local host="$1" m eff
+  m=$("$ROUTER_HOME/bin/router" launch-model "$host" 2>/dev/null)
+  [ -n "$m" ] || { command "$host"; return $?; }
+  case "$host" in
+    claude) command claude --model "$m" ;;
+    codex)
+      eff=${m#*$'\t'}; m=${m%%$'\t'*}
+      [ "$eff" = "$m" ] && eff=medium
+      command codex -c "model=$m" -c "model_reasoning_effort=$eff" ;;
+  esac
+}
+
 _router_run() {
   # _router_run <host> <router-bin> <args...>
   local host="$1" bin="$2"; shift 2
+  if [ "$#" -eq 0 ] && [ -x "$ROUTER_HOME/bin/router" ]; then
+    _router_bare_launch "$host"
+    return $?
+  fi
   if ! _router_is_prompt "$host" "$@" || [ ! -x "$bin" ]; then
     command "$host" "$@"
     return $?

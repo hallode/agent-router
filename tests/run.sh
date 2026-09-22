@@ -585,6 +585,36 @@ eq "missing definition still routes" haiku "$(m "$OUT")"
 eq "path traversal refused" "" "$(router_agent_declared_model "../../etc/passwd" "$AG")"
 eq "empty type is safe"     "" "$(router_agent_declared_model "" "$AG")"
 
+echo "== bare launch: quiet when the budget is fine =="
+# A launch with no prompt cannot be classified. Overriding the host's default
+# anyway would be noise, so silence here means "no override" and is the correct
+# answer whenever quota is healthy.
+lm() { ROUTER_CONFIG="$ROUTER_CONFIG" bash "$REPO_ROOT/bin/router" launch-model "$1" 2>/dev/null; }
+
+governor_set NORMAL x 0 >/dev/null
+eq "NORMAL: no claude override" "" "$(lm claude)"
+eq "NORMAL: no codex override"  "" "$(lm codex)"
+
+governor_set CONSERVE x 0 >/dev/null
+eq "CONSERVE: claude steps down" sonnet "$(lm claude)"
+case "$(lm codex)" in
+  *[![:space:]]*) ok ;;
+  *) bad "CONSERVE: codex names a model" "a model" "empty" ;;
+esac
+
+governor_set CRITICAL x 0 >/dev/null
+eq "CRITICAL: claude on the cheapest" haiku "$(lm claude)"
+governor_set DEPLETED x 0 >/dev/null
+eq "DEPLETED: claude on the cheapest" haiku "$(lm claude)"
+
+# Each step down must not reach past the end of the chain.
+for st in CONSERVE CRITICAL DEPLETED; do
+  governor_set "$st" x 0 >/dev/null
+  M=$(lm codex | cut -f1)
+  case "$M" in ""|null) bad "$st: codex chain index in range" "a model" "$M" ;; *) ok ;; esac
+done
+governor_set NORMAL x 0 >/dev/null
+
 echo "== decisions log =="
 [ -s "$ROUTER_LOG" ] && ok || bad "log written" "lines" "empty"
 eq "log is valid jsonl" 0 "$(jq -e . "$ROUTER_LOG" >/dev/null 2>&1; echo $?)"

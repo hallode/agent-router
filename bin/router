@@ -78,6 +78,23 @@ case "${1:-status}" in
     v="${2:?true|false}"; tmp="$ROUTER_CONFIG.tmp.$$"
     jq --argjson v "$v" '.enforce=$v' "$ROUTER_CONFIG" > "$tmp" && mv "$tmp" "$ROUTER_CONFIG"
     printf 'enforce=%s\n' "$v" ;;
+  launch-model)
+    # A bare interactive launch carries no prompt to classify, so tier routing
+    # cannot apply. What still applies is the budget: when quota is tight there
+    # is a reason to start cheaper. When it is not, stay out of the way and let
+    # the host use its own default — silence here means "no override".
+    ST=$(governor_state)
+    [ "$ST" = NORMAL ] && exit 0
+    case "${2:-claude}" in
+      claude) governor_model execution ;;
+      codex)
+        case "$ST" in CONSERVE) I=0 ;; CRITICAL) I=1 ;; *) I=2 ;; esac
+        N=$(jq -r '.codex_chains.execution | length' "$ROUTER_CONFIG" 2>/dev/null)
+        [ -z "$N" ] || [ "$N" = null ] && exit 0
+        [ "$I" -ge "$N" ] && I=$((N - 1))
+        jq -r --argjson i "$I" '.codex_chains.execution[$i] | "\(.model)\t\(.effort)"' "$ROUTER_CONFIG" 2>/dev/null
+        ;;
+    esac ;;
   test)    bash "$ROUTER_HOME/tests/run.sh" ;;
   *)
     cat <<'USAGE'
