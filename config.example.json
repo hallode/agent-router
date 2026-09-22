@@ -2,11 +2,6 @@
   "version": 1,
   "enforce": true,
   "bypass_prefix": "!!",
-  "tiers": [
-    "trivial",
-    "execution",
-    "reasoning"
-  ],
   "degrade": {
     "NORMAL": {
       "trivial": "haiku",
@@ -38,14 +33,14 @@
     "cc-planner": "reasoning",
     "cc-worker": "execution",
     "cc-reviewer": "reasoning",
-    "cc_explorer": "trivial",
-    "cc_planner": "reasoning",
-    "cc_worker": "execution",
-    "cc_reviewer": "reasoning",
     "router-explorer": "trivial",
     "router-worker": "execution",
     "router-reviewer": "reasoning",
     "router-planner": "reasoning"
+  },
+  "codex": {
+    "comment": "Codex settings. chains give each tier its own model, not one model at three efforts: a small model thinking hard is rarely the same trade as a large one thinking briefly. List what your account offers with `jq -r '.models[].slug' ~/.codex/models_cache.json`. allowed_accounts is empty by default, which means cxr never refuses; populate it only if workspaces.enabled is true.",
+    "allowed_accounts": []
   },
   "codex_chains": {
     "reasoning": [
@@ -112,11 +107,6 @@
       }
     ]
   },
-  "codex": {
-    "comment": "allowed_accounts is empty by default, which means cxr never refuses. Populate it only if workspaces.enabled is true.",
-    "allowed_accounts": []
-  },
-  "codex_chains_comment": "Different models per tier, not one model at different efforts. List what your account offers: jq -r '.models[].slug' ~/.codex/models_cache.json",
   "quota": {
     "comment": "codex-quota reads Codex's own rate-limit records. Replace with any command printing JSON if your host exposes quota differently; empty disables the probe.",
     "command": "$ROUTER_HOME/bin/codex-quota",

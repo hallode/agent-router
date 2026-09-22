@@ -72,16 +72,47 @@ cat <<EOF
 
 installed to $DEST
 
-1. Add to ~/.claude/settings.json:
+The router serves two hosts. Wire up whichever you use — they share one config,
+one governor and one decision log, so installing both is the point.
+
+1. Claude Code — add to ~/.claude/settings.json:
 
   "hooks": {
     "PreToolUse":       [{"matcher": "Agent", "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/claude-subagent.sh\\"", "timeout": 10}]}],
-    "UserPromptSubmit": [{"matcher": "",      "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/claude-advisor.sh\\"",      "timeout": 10}]}],
+    "UserPromptSubmit": [{"matcher": "",      "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/claude-advisor.sh\\"",  "timeout": 10}]}],
     "SessionStart":     [{"matcher": "",      "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/claude-session.sh\\"",  "timeout": 5}]}],
     "PostModelSwitch":  [{"matcher": "",      "hooks": [{"type": "command", "command": "bash \\"\$HOME/.claude/router/hooks/claude-session.sh\\"",  "timeout": 5}]}]
   }
 
-2. Start in dry-run and read the log for a few days:
+2. Codex — add to ~/.codex/config.toml:
+
+  [[hooks.SessionStart]]
+  [[hooks.SessionStart.hooks]]
+  type = "command"
+  command = "\$HOME/.claude/router/hooks/codex-advisor.sh"
+  timeout = 10
+
+  [[hooks.UserPromptSubmit]]
+  [[hooks.UserPromptSubmit.hooks]]
+  type = "command"
+  command = "\$HOME/.claude/router/hooks/codex-advisor.sh"
+  timeout = 10
+
+  Codex hooks cannot set a subagent's model, so this side injects budget state
+  rather than choosing models. Model selection happens at launch, via cxr.
+
+  Then fill in codex.chains in $DEST/config.json with models your account has:
+
+    jq -r '.models[].slug' ~/.codex/models_cache.json
+
+3. Both hosts, invisibly — add to ~/.zshrc:
+
+  [[ -r "\$HOME/.claude/router/shell/router.zsh" ]] && source "\$HOME/.claude/router/shell/router.zsh"
+
+  Then \`claude\` and \`codex\` route themselves. Subcommands, flags and
+  explicit overrides pass through untouched.
+
+4. Start in dry-run and read the log for a few days:
 
   $DEST/bin/router enforce false
   $DEST/bin/router status

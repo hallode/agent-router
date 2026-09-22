@@ -113,7 +113,10 @@ eq "explorer" trivial   "$(tier 'anything at all' cc-explorer)"
 eq "planner"  reasoning "$(tier 'anything at all' cc-planner)"
 eq "worker"   execution "$(tier 'anything at all' cc-worker)"
 eq "reviewer" reasoning "$(tier 'anything at all' cc-reviewer)"
-eq "codex naming" reasoning "$(tier 'anything' cc_reviewer)"
+# Codex agent names (cc_reviewer) never reach this hook: agent_type_tiers is read
+# only by the Claude subagent hook, and Claude Code sends its own agent names.
+# An unrecognised type falls through to classifying the prompt, which is right.
+eq "unknown type falls back to the prompt" trivial "$(tier 'grep for TODO' cc_reviewer)"
 eq "role beats text"  reasoning "$(tier 'grep for TODO' cc-planner)"
 eq "Plan builtin"     reasoning "$(tier 'grep for TODO' Plan)"
 eq "statusline"       trivial   "$(tier 'anything' statusline-setup)"
