@@ -135,6 +135,31 @@ Their models are *not* hardcoded in the agent files — each is `model: inherit`
 and the tier map decides. One place to change routing, and the quota governor can
 still degrade them.
 
+**Agents from other tools.** The shipped map claims only these four roles and
+Claude Code's own built-in types. If you use another tool that manages agents,
+map its names yourself:
+
+```json
+"agent_type_tiers": {
+  "their-explorer": "trivial",
+  "their-reviewer": "reasoning"
+}
+```
+
+Nothing is assumed on your behalf: an agent type that is not in the map falls
+through to classifying the prompt, and an agent whose definition already names
+a model is left alone entirely — see *Deference*, below. Another project's agent
+names are that project's business, and a router that pre-declares how they should
+be priced is guessing about software it does not own.
+
+### Deference
+
+An agent definition that names its own `model:` is a decision someone made. The
+tier map is an inference. The router never overrules the first with the second:
+a definition saying `model: opus` is passed through untouched, while
+`model: inherit` is a definition declining to choose, which is exactly what the
+tier map is for.
+
 To install the roles, re-run the installer with `--with-agents`:
 
 ```sh

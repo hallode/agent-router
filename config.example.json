@@ -29,15 +29,12 @@
     "Explore": "execution",
     "Plan": "reasoning",
     "claude-code-guide": "execution",
-    "cc-explorer": "trivial",
-    "cc-planner": "reasoning",
-    "cc-worker": "execution",
-    "cc-reviewer": "reasoning",
     "router-explorer": "trivial",
     "router-worker": "execution",
     "router-reviewer": "reasoning",
     "router-planner": "reasoning"
   },
+  "agent_type_tiers_comment": "Maps an agent type to a tier, skipping prompt classification entirely: a role is known, a prompt is a guess. Shipped with this project's own router-* roles and Claude Code's built-in types. Add entries here for agents from any other tool you use \u2014 their names are theirs, not ours to assume.",
   "codex": {
     "comment": "Codex settings. chains give each tier its own model, not one model at three efforts: a small model thinking hard is rarely the same trade as a large one thinking briefly. List what your account offers with `jq -r '.models[].slug' ~/.codex/models_cache.json`. allowed_accounts is empty by default, which means cxr never refuses; populate it only if workspaces.enabled is true.",
     "allowed_accounts": []

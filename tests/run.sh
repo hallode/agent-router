@@ -108,16 +108,33 @@ eq "design not a noun" execution "$(tier 'follow the existing design and add a f
 LONG=$(printf 'find the handler %.0s' $(seq 1 200))
 eq "long is not trivial" execution "$(tier "$LONG")"
 
-echo "== classify: roles outrank prompt text =="
-eq "explorer" trivial   "$(tier 'anything at all' cc-explorer)"
-eq "planner"  reasoning "$(tier 'anything at all' cc-planner)"
-eq "worker"   execution "$(tier 'anything at all' cc-worker)"
-eq "reviewer" reasoning "$(tier 'anything at all' cc-reviewer)"
-# Codex agent names (cc_reviewer) never reach this hook: agent_type_tiers is read
-# only by the Claude subagent hook, and Claude Code sends its own agent names.
-# An unrecognised type falls through to classifying the prompt, which is right.
-eq "unknown type falls back to the prompt" trivial "$(tier 'grep for TODO' cc_reviewer)"
-eq "role beats text"  reasoning "$(tier 'grep for TODO' cc-planner)"
+echo "== classify: roles skip the guesswork =="
+# The shipped map claims only this project's own roles and the host's built-in
+# types. Another tool's agent names belong to that tool; users map them if they
+# want them, which the next block proves works.
+eq "explorer" trivial   "$(tier 'anything at all' router-explorer)"
+eq "worker"   execution "$(tier 'anything at all' router-worker)"
+eq "planner"  reasoning "$(tier 'anything at all' router-planner)"
+eq "reviewer" reasoning "$(tier 'anything at all' router-reviewer)"
+eq "role beats text"       reasoning "$(tier 'grep for TODO' router-planner)"
+eq "host built-in Plan"    reasoning "$(tier 'grep for TODO' Plan)"
+eq "host built-in Explore" execution "$(tier 'grep for TODO' Explore)"
+
+echo "== classify: another tool's agents are mappable, not assumed =="
+eq "unmapped falls back to the prompt" trivial "$(tier 'grep for TODO' some-other-tools-agent)"
+python3 - "$ROUTER_CONFIG" <<'PYT'
+import json, sys
+c = json.load(open(sys.argv[1]))
+c['agent_type_tiers']['some-other-tools-agent'] = 'reasoning'
+json.dump(c, open(sys.argv[1], 'w'), indent=2)
+PYT
+eq "once mapped, the role wins" reasoning "$(tier 'grep for TODO' some-other-tools-agent)"
+python3 - "$ROUTER_CONFIG" <<'PYU'
+import json, sys
+c = json.load(open(sys.argv[1]))
+c['agent_type_tiers'].pop('some-other-tools-agent', None)
+json.dump(c, open(sys.argv[1], 'w'), indent=2)
+PYU
 eq "Plan builtin"     reasoning "$(tier 'grep for TODO' Plan)"
 eq "statusline"       trivial   "$(tier 'anything' statusline-setup)"
 
@@ -266,7 +283,7 @@ EFF=$(router_effective_config "$PROJ")
 router_is_temp_config "$EFF"; eq "merged is temp" 0 "$?"
 eq "override applied"  reasoning "$(jq -r '.agent_type_tiers["my-agent"]' "$EFF")"
 eq "override scalar"   false     "$(jq -r '.enforce' "$EFF")"
-eq "global preserved"  reasoning "$(jq -r '.agent_type_tiers["cc-planner"]' "$EFF")"
+eq "global preserved"  reasoning "$(jq -r '.agent_type_tiers["router-planner"]' "$EFF")"
 eq "global degrade kept" opus    "$(jq -r '.degrade.NORMAL.reasoning' "$EFF")"
 rm -f "$EFF"
 
