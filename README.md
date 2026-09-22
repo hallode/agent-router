@@ -22,18 +22,24 @@ cheaper. It just ends.
 
 ## Quickstart
 
-You need `bash` (macOS's built-in 3.2 is fine), `jq`, and Claude Code.
+You need `bash` (macOS's built-in 3.2 is fine), `jq`, and at least one of
+Claude Code or the Codex CLI. Both is the point, but either works alone.
 
 ```sh
 git clone https://github.com/hallode/agent-router ~/.claude/router
 ~/.claude/router/install.sh
 ```
 
-The installer copies the files, creates a config, runs the test suite, and prints
-a block of hook configuration. Paste that block into `~/.claude/settings.json`.
+The installer copies the files, creates a config, runs the test suite, verifies
+the wiring, and then prints three things to paste:
 
-It never edits `settings.json` for you — hooks run arbitrary commands on every
-tool call, so that file is worth reading before something appends to it.
+1. hooks for `~/.claude/settings.json` (Claude Code),
+2. hooks for `~/.codex/config.toml` (Codex),
+3. one line for `~/.zshrc` that sources `shell/router.zsh` and makes both
+   invisible.
+
+It never edits those files for you — hooks run arbitrary commands on every tool
+call, so they are worth reading before something appends to them.
 
 Then check it is alive:
 
@@ -87,6 +93,40 @@ Check what it did, any time:
 ```sh
 router log 20
 router stats
+```
+
+### Nothing to type
+
+With the `.zshrc` line installed, you keep typing what you already type:
+
+```sh
+codex "implement the match scheduling endpoint"   # routed
+claude "why does this deadlock under load"        # routed
+
+codex resume                                      # untouched
+codex login                                       # untouched
+claude --resume                                   # untouched
+```
+
+A single non-flag argument that is not a known subcommand is a prompt, and gets
+routed. Everything else is the host's own interface and passes straight through.
+`claude!` and `codex!` reach the real binaries whenever you want them.
+
+The wrapper falls back to the host CLI on exactly one exit code — `126`, meaning
+the router could not start. A deliberate refusal, a usage error or a failed task
+propagates as-is, because falling back on a refusal performs the action that was
+refused, and re-running a task that already reached the provider can repeat its
+side effects.
+
+**A launch with no prompt** — `codex` on its own, which is how most sessions
+actually start — has nothing to classify, so tier routing cannot apply. The
+budget still can: while quota is healthy the wrapper changes nothing and the host
+keeps its own default, and once the governor steps down the session starts on the
+model that tier has stepped down to.
+
+```sh
+router launch-model claude    # empty while quota is healthy
+router launch-model codex     # model and effort once it is not
 ```
 
 ## How it decides
@@ -199,7 +239,9 @@ secondary   16.0% of a 7d window, resets Mon 16:19
 ```
 
 Codex publishes its own quota — every session records a 5-hour and a weekly
-percentage with reset times — so the governor sees a Codex wall coming. Claude
+percentage with reset times — and `bin/codex-quota` reads it, so the governor sees
+a Codex wall coming. Point `quota.command` at any command printing JSON to use a
+different source, or leave it empty to disable the probe. Claude
 Code records no equivalent figure, so on that side the governor reacts to
 rate-limit errors after they happen. That difference is in what the hosts record,
 not in how the router treats them.
@@ -229,25 +271,9 @@ subagent uses: `SubagentStart` carries only `systemMessage` and
 other, and this ships the context injection Codex *can* do rather than
 pretending the gap is not there.
 
-Install the Codex side by adding to `~/.codex/config.toml`:
-
-```toml
-[[hooks.SessionStart]]
-[[hooks.SessionStart.hooks]]
-type = "command"
-command = "$HOME/.claude/router/hooks/codex-advisor.sh"
-timeout = 10
-
-[[hooks.UserPromptSubmit]]
-[[hooks.UserPromptSubmit.hooks]]
-type = "command"
-command = "$HOME/.claude/router/hooks/codex-advisor.sh"
-timeout = 10
-```
-
-Because the governor state is shared, a rate limit on one host makes the other
-cheaper too — which is what you want when the two are backed by different
-accounts and only one is exhausted.
+Both sides are wired the same way — `install.sh` prints the block for each host,
+Claude's for `~/.claude/settings.json` and Codex's for `~/.codex/config.toml`. The
+blocks live there rather than here so the two copies cannot drift apart.
 
 ### Codex failover
 
@@ -292,7 +318,9 @@ router stats               # counts by host and model
 router enforce true|false  # enforce vs dry-run
 router state set CONSERVE  # force a budget state
 router probe               # refresh state from quota
+router launch-model <host> # model a bare launch should use, empty if none
 router test                # run the test suite
+tests/verify-install.sh    # check the wiring on this machine, not the logic
 
 ccr "<prompt>"             # start a Claude session on the right model
 cxr "<task>"               # run a Codex task, with failover
