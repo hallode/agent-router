@@ -101,7 +101,7 @@ one governor and one decision log, so installing both is the point.
   Codex hooks cannot set a subagent's model, so this side injects budget state
   rather than choosing models. Model selection happens at launch, via cxr.
 
-  Then fill in codex.chains in $DEST/config.json with models your account has:
+  Then fill in codex_chains in $DEST/config.json with models your account has:
 
     jq -r '.models[].slug' ~/.codex/models_cache.json
 
