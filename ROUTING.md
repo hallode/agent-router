@@ -1,41 +1,21 @@
-# Delegation standard
+# Router field guide
 
-Four standard roles exist. Each one's model is set by `~/.claude/router/config.json`
-and enforced by a `PreToolUse` hook, and degraded automatically when quota runs
-low. Use them by name; do not pass an explicit `model`.
+Use a helper only when its assignment is clear and independent enough to return
+a useful result. The current session owns the conversation and final decision.
+Do not pass an explicit model: the router reads the helper name and current
+budget to select one.
 
-| role | for | runs on |
-|---|---|---|
-| `router-explorer` | locating code, read-only investigation, fan-out search | Haiku |
-| `router-worker` | a settled, bounded change plus its checks | Sonnet |
-| `router-reviewer` | checking work something else produced | Opus |
-| `router-planner` | ordering a change large enough to get wrong | Opus |
+| helper | hand it |
+|---|---|
+| `router-scout` | a narrow, read-only question about the code |
+| `router-builder` | a bounded change with settled requirements |
+| `router-inspector` | a finished result to check against what it was meant to do |
+| `router-navigator` | a multi-step change that needs an order and checks |
 
-## When to delegate
+Keep tiny edits in the current session. Do not split a task when coordinating
+the pieces would take longer than doing it. If a helper needs the full dialogue
+to make a decision, keep that decision here and delegate only the separable work.
+Independent assignments may run in parallel.
 
-Delegate the parts that stand alone. Keep in this session the judgement, the
-decisions, and anything that needs the conversation so far.
-
-- Searching, locating, listing, counting → `router-explorer`.
-- A change whose requirements are already settled → `router-worker`.
-- Verifying a result before relying on it → `router-reviewer`.
-- More than a few dependent steps across components → `router-planner` first.
-
-Delegate in parallel when the parts are independent.
-
-## When not to delegate
-
-Do not delegate work that needs context this session holds and the subagent does
-not — a subagent starts blind and cannot ask. Do not delegate a decision; make it
-here and delegate the execution. Do not split work so finely that assembling the
-pieces costs more than doing it. A one-line edit is not worth a subagent.
-
-If an explicit model is genuinely needed, prefix the subagent prompt with `!!` to
-bypass routing, and say why.
-
-## Why
-
-The main session is the orchestrator and cannot change its own model — no hook
-can. Everything done inline is billed at the orchestrator's rate. Delegation is
-the only mechanism that prices work by what it actually needs, so the split
-between what stays here and what goes out is the whole saving.
+An agent definition that explicitly selects a model keeps that choice. To
+bypass routing for one delegated prompt, prefix it with `!!` and state why.

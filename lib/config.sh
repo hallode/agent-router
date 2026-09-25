@@ -14,7 +14,7 @@
 # The global file is never modified. If anything goes wrong the global config is
 # used unchanged — a malformed project file must not break routing.
 
-ROUTER_HOME="${ROUTER_HOME:-$HOME/.claude/router}"
+ROUTER_HOME="${ROUTER_HOME:?set ROUTER_HOME to the host router directory}"
 ROUTER_CONFIG="${ROUTER_CONFIG:-$ROUTER_HOME/config.json}"
 ROUTER_PROJECT_FILE="${ROUTER_PROJECT_FILE:-.agent-router.json}"
 
@@ -62,30 +62,22 @@ router_is_temp_config() {
   esac
 }
 
-# router_agent_declared_model <agent_type> [cwd]
-# Echoes an agent definition's own `model:` when it names one, empty when it says
-# `inherit` or there is no definition to read.
-#
-# An agent whose file names a model was configured deliberately — by its author,
-# or by a tool that manages agent definitions. The router's tier map is an
-# inference; an explicit declaration is not. Inference must not silently
-# overwrite a decision someone already made, so the hook leaves those calls
-# alone. `inherit` is the opposite: it is a definition declining to choose, which
-# is exactly what the tier map is for.
-router_agent_declared_model() {
-  local at="$1" dir="${2:-$PWD}" f m
-  [ -n "$at" ] || return 0
-  case "$at" in */*|*..*) return 0 ;; esac   # never leave the agents directory
+# router_use_effective_config [dir] — point ROUTER_CONFIG at the merged config
+# for this call and remove any temp file on exit. ROUTER_BASE_CONFIG keeps the
+# global path for commands that must write to it.
+ROUTER_BASE_CONFIG="$ROUTER_CONFIG"
+router_use_effective_config() {
+  local effective
+  effective=$(router_effective_config "${1:-$PWD}")
+  router_is_temp_config "$effective" || return 0
+  ROUTER_CONFIG="$effective"
+  trap 'router_release_config' EXIT
+}
 
-  for f in "$dir/.claude/agents/$at.md" "$HOME/.claude/agents/$at.md"; do
-    [ -r "$f" ] || continue
-    m=$(sed -n '/^---[[:space:]]*$/,/^---[[:space:]]*$/p' "$f" 2>/dev/null \
-        | sed -n 's/^model:[[:space:]]*//p' | head -1 \
-        | sed -e 's/[[:space:]]*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')
-    [ -z "$m" ] && continue
-    [ "$m" = "inherit" ] && return 0
-    printf '%s' "$m"
-    return 0
-  done
-  return 0
+# router_release_config — delete the merged temp config now. A launcher that
+# ends in `exec` calls this first, since an EXIT trap never fires after exec.
+router_release_config() {
+  [ "$ROUTER_CONFIG" != "$ROUTER_BASE_CONFIG" ] || return 0
+  rm -f "$ROUTER_CONFIG"
+  ROUTER_CONFIG="$ROUTER_BASE_CONFIG"
 }

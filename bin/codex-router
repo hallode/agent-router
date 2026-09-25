@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Codex-only router controls.
+set -uo pipefail
+ROUTER_HOME="${ROUTER_HOME:-${CODEX_HOME:-$HOME/.codex}/router}"
+export ROUTER_CONFIG="${ROUTER_CONFIG:-$ROUTER_HOME/config.json}"
+ROUTER_LOG="${ROUTER_LOG:-$ROUTER_HOME/decisions.jsonl}"
+. "$ROUTER_HOME/lib/config.sh"
+. "$ROUTER_HOME/lib/classify.sh"
+. "$ROUTER_HOME/lib/governor.sh"
+. "$ROUTER_HOME/lib/codex-budget.sh"
+. "$ROUTER_HOME/lib/workspace.sh"
+. "$ROUTER_HOME/lib/controls.sh"
+router_use_effective_config "$PWD"
+
+model_for() {
+  local effective
+  effective=$(governor_codex_tier "$(governor_state)" "$1")
+  jq -r --arg t "$effective" '.codex_chains[$t][0].model // "-"' "$ROUTER_CONFIG"
+}
+case "${1:-status}" in
+  status)
+    router_status_header codex
+    printf 'model map  '
+    for tier in trivial execution reasoning; do printf '%s=%s ' "$tier" "$(model_for "$tier")"; done
+    printf '\n'
+    ;;
+  why)
+    shift; tier=$(classify_tier '' "$*")
+    effective=$(governor_codex_tier "$(governor_state)" "$tier")
+    if [ "$effective" = "$tier" ]; then
+      printf 'host=codex tier=%s -> model=%s\n' "$tier" "$(model_for "$tier")"
+    else
+      printf 'host=codex tier=%s effective=%s -> model=%s\n' "$tier" "$effective" "$(model_for "$tier")"
+    fi ;;
+  launch-model)
+    state=$(governor_state)
+    [ "$state" = NORMAL ] && exit 0
+    tier=$(governor_codex_tier "$state" execution)
+    jq -r --arg t "$tier" '.codex_chains[$t][0] | select(. != null) | "\(.model)\t\(.effort)"' "$ROUTER_CONFIG" ;;
+  agents)
+    codex_write_agents all ;;
+  *)
+    router_control "$@"; rc=$?
+    [ "$rc" -ne 3 ] && exit "$rc"
+    echo 'usage: router status|state|why|launch-model|agents|probe|log|stats|enforce' >&2; exit 2 ;;
+esac

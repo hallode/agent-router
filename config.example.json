@@ -24,17 +24,28 @@
       "reasoning": "haiku"
     }
   },
+  "effort": {
+    "execution": "medium",
+    "reasoning": "high"
+  },
+  "effort_comment": "Claude effort per task tier, passed as --effort on a prompted launch and shown with /model suggestions. An unmapped tier (trivial here) passes no flag, so the host default applies. Subagent effort is set by each agent's own `effort:` frontmatter; the Agent tool cannot carry it.",
+  "compact": {
+    "threshold": 160000,
+    "threshold_1m": 250000,
+    "repeat_every": 60000,
+    "comment": "Claude advisor suggests /compact once the latest turn's context passes the threshold (threshold_1m for [1m] models), then again after each repeat_every tokens of growth."
+  },
   "agent_type_tiers": {
     "statusline-setup": "trivial",
     "Explore": "execution",
     "Plan": "reasoning",
     "claude-code-guide": "execution",
-    "router-explorer": "trivial",
-    "router-worker": "execution",
-    "router-reviewer": "reasoning",
-    "router-planner": "reasoning"
+    "router-scout": "trivial",
+    "router-builder": "execution",
+    "router-inspector": "reasoning",
+    "router-navigator": "reasoning"
   },
-  "agent_type_tiers_comment": "Maps an agent type to a tier, skipping prompt classification entirely: a role is known, a prompt is a guess. Shipped with this project's own router-* roles and Claude Code's built-in types. Add entries here for agents from any other tool you use \u2014 their names are theirs, not ours to assume.",
+  "agent_type_tiers_comment": "Map any agent type to a tier when its prompts are too varied to classify. The router's own roles (scout, builder, inspector, navigator) route without an entry; list them only to change their tier.",
   "codex": {
     "comment": "Codex settings. chains give each tier its own model, not one model at three efforts: a small model thinking hard is rarely the same trade as a large one thinking briefly. List what your account offers with `jq -r '.models[].slug' ~/.codex/models_cache.json`. allowed_accounts is empty by default, which means cxr never refuses; populate it only if workspaces.enabled is true.",
     "allowed_accounts": []

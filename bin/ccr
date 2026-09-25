@@ -19,13 +19,14 @@ set -uo pipefail
 ROUTER_HOME="${ROUTER_HOME:-$HOME/.claude/router}"
 export ROUTER_CONFIG="${ROUTER_CONFIG:-$ROUTER_HOME/config.json}"
 # 126 = "the router could not start". The shell wrapper falls back only on this.
-for _lib in config.sh classify.sh governor.sh; do
+for _lib in config.sh classify.sh governor.sh claude-model.sh; do
   [ -r "$ROUTER_HOME/lib/$_lib" ] || { echo "ccr: missing lib/$_lib" >&2; exit 126; }
 done
 [ -r "$ROUTER_CONFIG" ] || { echo "ccr: missing config $ROUTER_CONFIG" >&2; exit 126; }
 . "$ROUTER_HOME/lib/config.sh"
 . "$ROUTER_HOME/lib/classify.sh"
 . "$ROUTER_HOME/lib/governor.sh"
+. "$ROUTER_HOME/lib/claude-model.sh"
 
 usage() {
   cat <<'USAGE'
@@ -56,11 +57,7 @@ done
 [ -z "$PROMPT" ] && [ ! -t 0 ] && PROMPT=$(cat)
 if [ -z "$PROMPT" ]; then usage; exit 2; fi
 
-EFFECTIVE=$(router_effective_config "$PWD")
-if router_is_temp_config "$EFFECTIVE"; then
-  ROUTER_CONFIG="$EFFECTIVE"
-  trap 'rm -f "$EFFECTIVE"' EXIT
-fi
+router_use_effective_config "$PWD"
 
 [ -z "$TIER" ] && TIER=$(classify_tier "" "$PROMPT")
 case "$TIER" in trivial|execution|reasoning) ;; *) TIER=execution ;; esac
@@ -68,18 +65,23 @@ case "$TIER" in trivial|execution|reasoning) ;; *) TIER=execution ;; esac
 STATE=$(governor_state)
 MODEL=$(governor_model "$TIER")
 [ -n "$MODEL" ] || MODEL=sonnet
+# Effort is opt-in per tier; an unmapped tier keeps the host's own default.
+EFFORT=$(claude_effort "$TIER")
+FLAGS=(--model "$MODEL")
+[ -n "$EFFORT" ] && FLAGS+=(--effort "$EFFORT")
 
-printf '\033[2m[ccr] tier=%s state=%s model=%s\033[0m\n' "$TIER" "$STATE" "$MODEL" >&2
+printf 'Agent Router · Claude: using %s%s (%s task, budget %s).\n' "$MODEL" "${EFFORT:+, effort $EFFORT}" "$TIER" "$STATE" >&2
 
 if [ "$DRY" -eq 1 ]; then
-  printf '[ccr] would run: claude --model %s "%s"\n' "$MODEL" "${PROMPT:0:60}"
+  printf '[ccr] would run: claude %s "%s"\n' "${FLAGS[*]}" "${PROMPT:0:60}"
   exit 0
 fi
 
 command -v claude >/dev/null 2>&1 || { echo "ccr: claude not found in PATH" >&2; exit 127; }
 
+router_release_config
 if [ "${#EXTRA[@]}" -gt 0 ]; then
-  exec claude --model "$MODEL" "${EXTRA[@]}" "$PROMPT"
+  exec claude "${FLAGS[@]}" "${EXTRA[@]}" "$PROMPT"
 else
-  exec claude --model "$MODEL" "$PROMPT"
+  exec claude "${FLAGS[@]}" "$PROMPT"
 fi

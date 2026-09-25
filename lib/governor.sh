@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # governor.sh — budget state machine driving tier degradation.
 #
-#   NORMAL    full tier map, Opus available
-#   CONSERVE  reasoning drops to Sonnet
-#   CRITICAL  execution drops to Haiku, reasoning to Sonnet
-#   DEPLETED  everything on Haiku; Codex chains take over for real work
+#   NORMAL    full configured map
+#   CONSERVE  first budget-saving step
+#   CRITICAL  stronger budget saving
+#   DEPLETED  lowest configured budget tier
 #
 # State comes from, in precedence order:
 #   1. a manual override (`router state set ...`), until it expires
@@ -13,7 +13,7 @@
 # Absent all three, NORMAL. The governor never fails the caller: any error
 # path returns NORMAL so a broken probe can never block a tool call.
 
-ROUTER_HOME="${ROUTER_HOME:-$HOME/.claude/router}"
+ROUTER_HOME="${ROUTER_HOME:?set ROUTER_HOME to the host router directory}"
 ROUTER_STATE="${ROUTER_STATE:-$ROUTER_HOME/state.json}"
 ROUTER_LIMIT_TTL="${ROUTER_LIMIT_TTL:-3600}"   # a limit event decays after 1h
 
@@ -122,13 +122,4 @@ governor_refresh_if_stale() {
   [ $((now - updated)) -lt "$max_age" ] 2>/dev/null && return 0
   governor_probe_quota >/dev/null 2>&1 || true
   return 0
-}
-
-# governor_model <tier> — map a tier to a model under the current state.
-governor_model() {
-  local tier="$1" st model
-  st=$(governor_state)
-  model=$(jq -r --arg s "$st" --arg t "$tier" '.degrade[$s][$t] // empty' "$ROUTER_CONFIG" 2>/dev/null)
-  [ -z "$model" ] && model=sonnet
-  printf '%s' "$model"
 }
