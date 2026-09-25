@@ -1,499 +1,175 @@
 # agent-router
 
-Sends each piece of coding-agent work to the cheapest model that can actually do
-it — and keeps working when a provider says you are out of quota.
+Automatically pick a suitable model when starting a new CLI coding task without
+spending a model call on the decision. The source repository supports Claude Code and Codex, but each host
+gets its own installation, configuration, wrapper, budget state, and log.
 
-Works with [Claude Code](https://code.claude.com) and the
-[Codex CLI](https://developers.openai.com/codex/cli/).
-Plain `bash` and `jq`. No daemon, no build step, no API key, and no model call in
-the routing path.
+## Install
 
----
-
-## The problem
-
-**You pay top rates for trivial work.** Choosing a model by hand means either
-thinking about it on every prompt, or not thinking about it and letting the most
-expensive model rename your variables.
-
-**And when you hit the rate limit, everything stops.** You are halfway through a
-task, the provider cuts you off, and the reset is hours away. Nothing gets
-cheaper. It just ends.
-
-## Quickstart
-
-You need `bash` (macOS's built-in 3.2 is fine), `jq`, and at least one of
-Claude Code or the Codex CLI. Both is the point, but either works alone.
+Requires Bash, `jq`, and whichever host CLI you use. From this checkout:
 
 ```sh
-git clone https://github.com/hallode/agent-router ~/.claude/router
-~/.claude/router/install.sh
+bash install.sh
+bash install.sh --with-agents   # optional helper roles for Claude and Codex
+bash tests/run.sh
+bash tests/verify-install.sh
 ```
 
-The installer copies the files, creates a config, runs the test suite, verifies
-the wiring, and then prints three things to paste:
+The installed layout is intentionally separate:
 
-1. hooks for `~/.claude/settings.json` (Claude Code),
-2. hooks for `~/.codex/config.toml` (Codex),
-3. one line for `~/.zshrc` that sources `shell/router.zsh` and makes both
-   invisible.
+| Claude Code | Codex |
+|---|---|
+| `~/.claude/router/config.json` | `~/.codex/router/config.json` |
+| `~/.claude/router/bin/ccr` | `~/.codex/router/bin/cxr` |
+| `~/.claude/router/hooks/claude-*.sh` | `~/.codex/router/hooks/codex-advisor.sh` |
+| `~/.claude/router/shell/claude.zsh` | `~/.codex/router/shell/codex.zsh` |
+| `~/.claude/router/state.json` | `~/.codex/router/state.json` |
 
-It never edits those files for you — hooks run arbitrary commands on every tool
-call, so they are worth reading before something appends to them.
+Each also has its own `bin/router` for `status`, `why`, `state`, `probe`, `log`,
+`stats`, `enforce`, and `launch-model`. No Codex executable is installed under
+Claude's router directory, and no Claude executable is installed under Codex's.
+The checkout's `config.example.json` is a combined source template; the
+installer writes host-specific configs. Existing config values are preserved
+when migrating from an older combined installation. The original combined
+files are moved to `~/.local/share/agent-router/pre-split/` for recovery.
 
-Then check it is alive:
+Day-to-day, use `claude` or `codex` normally. The only router command you need
+to call yourself is `agent-router status`. It shows recent hook activity, the
+observed host and model, or `idle` if no activity was observed in five minutes.
+Recent activity is evidence of a hook firing, not proof that the process remains
+open. An empty status after installation means routing has not yet been observed
+in a session; open a new session to verify the hooks.
+
+When an observed session changes models, its hook sends one short user-visible
+notice with the old and new model. Claude uses `PostModelSwitch`; Codex compares
+the model reported by consecutive lifecycle events. CLI task launches show the
+initial choice, and Codex rate-limit fallback shows the actual model transition
+in the terminal. No notice is emitted for an unchanged model. These notices
+report observed changes; they do not themselves switch an interactive model.
+
+Add the host-specific wrappers to `~/.zshrc`:
 
 ```sh
-~/.claude/router/bin/router status
+source ~/.claude/router/shell/claude.zsh
+source ~/.codex/router/shell/codex.zsh
 ```
 
-```
-state      NORMAL
-enforce    true
-tier map   trivial=haiku execution=sonnet reasoning=opus
-decisions  none yet
+They affect only their matching command. `claude "<task>"` and
+`codex "<task>"` route automatically. The internal `ccr` and `cxr` executables
+are not part of the daily workflow. Subcommands and flags pass through to the real
+CLI. `claude!` and `codex!` bypass their wrappers. A bare interactive launch
+cannot classify a prompt it has not seen, but may start on a cheaper model
+when that host's budget state is tight.
+
+## Hooks
+
+Claude settings in `~/.claude/settings.json` should call only these files:
+
+```text
+~/.claude/router/hooks/claude-subagent.sh   PreToolUse: Agent
+~/.claude/router/hooks/claude-advisor.sh    UserPromptSubmit
+~/.claude/router/hooks/claude-session.sh    SessionStart, PostModelSwitch
+~/.claude/router/hooks/claude-session.sh    SessionEnd
 ```
 
-That is the whole setup. The shipped config works unmodified — no directory
-convention, no account setup, nothing to fill in.
+Codex hooks in `~/.codex/config.toml` should call only its advisor:
 
-**Before you trust it, run it in dry-run for a few days:**
+```toml
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "$HOME/.codex/router/hooks/codex-advisor.sh"
+timeout = 10
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "$HOME/.codex/router/hooks/codex-advisor.sh"
+timeout = 10
+
+[[hooks.SessionEnd]]
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "$HOME/.codex/router/hooks/codex-advisor.sh"
+timeout = 10
+```
+
+Codex supports user-level hook configuration in `~/.codex/config.toml`;
+see the [official configuration guide](https://learn.chatgpt.com/docs/config-file/config-advanced).
+The Codex hook provides budget context. It cannot change the model of an
+already-running Desktop or interactive session; prompt-based model choice is
+for new CLI tasks launched through the ordinary `codex "<task>"` wrapper.
+
+## Choices
+
+The classifier uses three task sizes: `trivial` for narrow lookups and
+mechanical changes, `execution` for ordinary implementation, and `reasoning`
+for design, diagnosis, and review. Unclear requests use `execution`. No model
+call is made to classify a prompt.
 
 ```sh
-~/.claude/router/bin/router enforce false   # decide and log, change nothing
-# ... work normally ...
-~/.claude/router/bin/router log 30          # read what it would have done
-~/.claude/router/bin/router enforce true    # switch it on
+~/.claude/router/bin/router why "find the booking handler"
+~/.codex/router/bin/router why "implement the booking endpoint"
+agent-router status
 ```
 
-Every router misclassifies something. Far better to find yours in a log than in a
-subagent that quietly had the wrong model.
+Claude can also route delegated work by helper name. The optional definitions
+are `router-scout` (lookup), `router-builder` (bounded implementation),
+`router-inspector` (independent check), and `router-navigator` (ordered work
+map). Their names describe the result they return, not their importance.
 
-## What actually changes
+Effort follows the task too. On Claude, the `effort` map in config sets
+`--effort` for a prompted launch (execution=medium, reasoning=high; an unmapped
+tier keeps the host default). The Agent tool cannot carry effort, so each
+Claude role sets its own `effort:` frontmatter: scout low, builder medium,
+inspector and navigator high. On Codex, `--with-agents` (or
+`~/.codex/router/bin/router agents`) writes the same four roles to
+`~/.codex/agents/` with the model and effort from `codex_chains`. Each Codex
+SessionStart refreshes those files for the current budget state. It never
+touches a role file it did not write.
 
-Nothing you type. The router runs as a hook, so it is invisible until you look at
-the log.
+No hook can switch a running session's model, but you can in one command.
+When a prompt clearly does not fit the session, the advisor says so once per
+session: for example, a large model on execution work, or a small model on a
+reasoning task. On Claude it suggests `/model sonnet` and `/effort medium`; on
+Codex it names the model and effort to pick with `/model`. A mid-size session
+is never prompted.
 
-When your assistant delegates work to a subagent, the router intercepts that call
-and sets the model:
+Claude's advisor also watches the resent context. Once the latest turn's
+context passes `compact.threshold` (160k, or 250k on a `[1m]` model), it
+suggests `/compact` once, then again after each further 60k of growth.
 
-```
-you: "find every caller of ParseConfig"
-  assistant delegates  ->  mechanical      ->  runs on Haiku
+Agent roles defined outside this router are routed by mapping their names in
+your own config's `agent_type_tiers`. On Codex, pin those roles where they are
+defined; this router writes only its own role files.
 
-you: "add a POST /invoices endpoint"
-  assistant delegates  ->  implementation  ->  runs on Sonnet
-
-you: "why does this deadlock under load?"
-  assistant delegates  ->  needs judgement ->  runs on Opus
-```
-
-Check what it did, any time:
+Each host's budget responds only to its own state. The four states are
+`NORMAL`, `CONSERVE`, `CRITICAL`, and `DEPLETED`. A tight Codex budget lowers
+the task tier; entries later in a model chain are availability fallbacks after
+a rate limit, never a cheaper step. The Codex quota probe reads Codex's local
+records. Claude's quota probe is blank by default, so a Codex limit never
+silently changes Claude's model.
 
 ```sh
-router log 20
-router stats
+agent-router status
+~/.codex/router/bin/router probe
 ```
 
-### Nothing to type
-
-With the `.zshrc` line installed, you keep typing what you already type:
-
-```sh
-codex "implement the match scheduling endpoint"   # routed
-claude "why does this deadlock under load"        # routed
-
-codex resume                                      # untouched
-codex login                                       # untouched
-claude --resume                                   # untouched
-```
-
-A single non-flag argument that is not a known subcommand is a prompt, and gets
-routed. Everything else is the host's own interface and passes straight through.
-`claude!` and `codex!` reach the real binaries whenever you want them.
-
-The wrapper falls back to the host CLI on exactly one exit code — `126`, meaning
-the router could not start. A deliberate refusal, a usage error or a failed task
-propagates as-is, because falling back on a refusal performs the action that was
-refused, and re-running a task that already reached the provider can repeat its
-side effects.
-
-**A launch with no prompt** — `codex` on its own, which is how most sessions
-actually start — has nothing to classify, so tier routing cannot apply. The
-budget still can: while quota is healthy the wrapper changes nothing and the host
-keeps its own default, and once the governor steps down the session starts on the
-model that tier has stepped down to.
-
-```sh
-router launch-model claude    # empty while quota is healthy
-router launch-model codex     # model and effort once it is not
-```
-
-## How it decides
-
-### Three tiers
-
-| tier | the work | model |
-|---|---|---|
-| `trivial` | mechanical, read-only, deterministic | Haiku |
-| `execution` | ordinary implementation — **the default** | Sonnet |
-| `reasoning` | design, debugging, audits, review | Opus |
-
-Two rules keep this honest:
-
-- **When unsure, the middle tier.** `execution` is the fallback, never `trivial`.
-  Giving Haiku a real task costs a retry, which is more expensive than just
-  having used Sonnet.
-- **No model call to pick a model.** A classifier that asks an LLM which LLM to
-  use has already lost. Classification is regular expressions: a few
-  milliseconds, zero tokens.
-
-### Roles beat guessing
-
-Reading a prompt is guesswork. Knowing an agent's *role* is not. Four standard
-roles ship with the router, and where one is used the prompt is never classified
-at all:
-
-| role | use it for | tier |
-|---|---|---|
-| `router-explorer` | locating code, read-only investigation | `trivial` |
-| `router-worker` | a settled, bounded change plus its checks | `execution` |
-| `router-reviewer` | checking work something else produced | `reasoning` |
-| `router-planner` | ordering a change large enough to get wrong | `reasoning` |
-
-The reasoning behind that split:
-
-- A **planner** runs once, and everything downstream inherits its mistakes.
-- A **reviewer** has to catch what another model already convinced itself was
-  fine — and one drawn from a different model family has different blind spots.
-  With `router-worker` on Sonnet and `router-reviewer` on Opus, you get that for
-  free.
-- A **worker** is where token volume goes.
-- An **explorer** is high-count and shallow.
-
-Their models are *not* hardcoded in the agent files — each is `model: inherit`,
-and the tier map decides. One place to change routing, and the quota governor can
-still degrade them.
-
-**Agents from other tools.** The shipped map claims only these four roles and
-Claude Code's own built-in types. If you use another tool that manages agents,
-map its names yourself:
-
-```json
-"agent_type_tiers": {
-  "their-explorer": "trivial",
-  "their-reviewer": "reasoning"
-}
-```
-
-Nothing is assumed on your behalf: an agent type that is not in the map falls
-through to classifying the prompt, and an agent whose definition already names
-a model is left alone entirely — see *Deference*, below. Another project's agent
-names are that project's business, and a router that pre-declares how they should
-be priced is guessing about software it does not own.
-
-### Deference
-
-An agent definition that names its own `model:` is a decision someone made. The
-tier map is an inference. The router never overrules the first with the second:
-a definition saying `model: opus` is passed through untouched, while
-`model: inherit` is a definition declining to choose, which is exactly what the
-tier map is for.
-
-To install the roles, re-run the installer with `--with-agents`:
-
-```sh
-~/.claude/router/install.sh --with-agents
-```
-
-That copies the four role definitions into `~/.claude/agents/`, puts
-`ROUTING.md` beside your `CLAUDE.md`, and references it with `@ROUTING.md`.
-`ROUTING.md` is a short standing instruction telling your assistant when to
-delegate — and, just as importantly, when not to.
-
-New agent definitions are picked up when a session starts, so they become
-available in your **next** Claude Code session, not the one you are in.
-
-## Staying alive at the rate limit
-
-This is the part cost-only routers leave out.
-
-| state | trigger | effect |
-|---|---|---|
-| `NORMAL` | — | full tier map |
-| `CONSERVE` | ≥60% of quota used | reasoning drops to Sonnet |
-| `CRITICAL` | ≥85% | execution drops to Haiku |
-| `DEPLETED` | limit reached | everything on Haiku; Codex chains take over |
-
-Degradation is gradual rather than a wall, and a rate-limit event decays after an
-hour, so one bad minute does not cripple your afternoon.
-
-```sh
-router probe
-```
-
-```
-state      DEPLETED
-primary    100.0% of a 5h window, resets Mon 21:19
-secondary   16.0% of a 7d window, resets Mon 16:19
-```
-
-Codex publishes its own quota — every session records a 5-hour and a weekly
-percentage with reset times — and `bin/codex-quota` reads it, so the governor sees
-a Codex wall coming. Point `quota.command` at any command printing JSON to use a
-different source, or leave it empty to disable the probe. Claude
-Code records no equivalent figure, so on that side the governor reacts to
-rate-limit errors after they happen. That difference is in what the hosts record,
-not in how the router treats them.
-
-## Claude and Codex, same behaviour
-
-Switching hosts should not mean switching habits. Both share one classifier, one
-set of tier names, one governor state file, and one decision log.
-
-| | Claude Code | Codex |
-|---|---|---|
-| pick the model from a prompt | `ccr` | `cxr` |
-| budget state injected each session | `SessionStart` hook | `SessionStart` hook |
-| warned when the budget is tight | `UserPromptSubmit` hook | `UserPromptSubmit` hook |
-| tier names | trivial / execution / reasoning | same |
-| governor state | shared | shared |
-| decision log | `decisions.jsonl` | same file, `host` field |
-| per-repo override | `.agent-router.json` | same file |
-| quota read before choosing | on rate-limit errors | real percentages |
-| **enforce a subagent's model** | **yes**, `PreToolUse` | **no** — see below |
-
-One asymmetry cannot be closed. Codex's hook API is otherwise close to Claude
-Code's — `PreToolUse` rewrites tool input with the same `updatedInput` shape —
-but its documentation is explicit that hooks cannot influence which model a
-subagent uses: `SubagentStart` carries only `systemMessage` and
-`additionalContext`. So subagent enforcement exists on one host and not the
-other, and this ships the context injection Codex *can* do rather than
-pretending the gap is not there.
-
-Both sides are wired the same way — `install.sh` prints the block for each host,
-Claude's for `~/.claude/settings.json` and Codex's for `~/.codex/config.toml`. The
-blocks live there rather than here so the two copies cannot drift apart.
-
-### Codex failover
-
-```sh
-cxr "implement the retry middleware"   # classify, pick a model, run codex exec
-cxr -t reasoning "why is this slow"    # force a tier
-cxr -n "<task>"                        # dry run: print the chain
-```
-
-Each tier gets its own chain. On a rate limit `cxr` moves to the next link and
-tells the governor, instead of dying:
-
-```json
-"codex_chains": {
-  "execution": [
-    {"model": "<your-primary>",  "effort": "medium"},
-    {"model": "<your-fallback>", "effort": "medium"},
-    {"model": "<your-reserve>",  "effort": "medium"}
-  ]
-}
-```
-
-Give each tier a different *model*, not one model at three effort levels — a
-small model thinking hard is rarely the same trade as a large one thinking
-briefly. Model availability differs per account, so list yours:
-
-```sh
-jq -r '.models[] | "\(.slug)\t\([.supported_reasoning_levels[]?.effort] | join("/"))"' \
-  ~/.codex/models_cache.json
-```
-
-Most accounts carry a spare or reserve model that never gets used, because nothing
-falls back to it. That is the last link worth having.
-
-## Commands
-
-```sh
-router status              # state, tier map, any active override
-router why "<prompt>"      # explain a classification before trusting it
-router log [n]             # recent routing decisions
-router stats               # counts by host and model
-router enforce true|false  # enforce vs dry-run
-router state set CONSERVE  # force a budget state
-router probe               # refresh state from quota
-router launch-model <host> # model a bare launch should use, empty if none
-router test                # run the test suite
-tests/verify-install.sh    # check the wiring on this machine, not the logic
-
-ccr "<prompt>"             # start a Claude session on the right model
-cxr "<task>"               # run a Codex task, with failover
-router-learn               # mine past sessions for what spend actually bought
-```
-
-### When the router picks wrong
-
-Override it — but know that the override is the useful part:
-
-```sh
-cxr -t reasoning "<task>"   # force a tier for one run
-cxr -n "<task>"             # see the choice without running it
-```
-
-In Claude Code, `/model <name>` changes the session, and a `!!` prefix on a
-subagent prompt bypasses routing for that call.
-
-Both a forced tier and a `!!` bypass are recorded as **manual overrides**, kept
-separate from automatic decisions:
-
-```sh
-router stats
-```
-
-```
---
-4  manual overrides (forced tier)
-1  manual bypasses (!!)
-Each one is a case the classifier got wrong. Worth reading:
-  reasoning  normalise the phone format across the importer
-```
-
-If one kind of task is always overridden, change the map instead of overriding
-forever — `agent_type_tiers` and `codex_chains` in the config, or a
-`.agent-router.json` for a single repository. `router why "<prompt>"` shows how
-anything classifies before you commit to it.
-
-### Escape hatch
-
-Prefix a subagent prompt with `!!` and the router leaves it alone. The marker is
-stripped before the agent sees it.
-
-```
-!! audit this migration end to end
-```
-
-## Optional extras
-
-Both are **off by default**, and most people never need them.
-
-<details>
-<summary><b>Per-directory accounts</b> — if you hold more than one subscription</summary>
-
-<br>
-
-Useful only when you care which account a directory bills. Labels are yours; the
-router just compares them.
-
-```json
-"workspaces": {
-  "enabled": true,
-  "rules": [
-    {"prefix": "$HOME/src/oss",  "account": "personal"},
-    {"prefix": "$HOME/src/acme", "account": "employer"}
-  ],
-  "remote_patterns": [
-    {"pattern": "git\\.acme\\.example", "account": "employer"}
-  ]
-},
-"codex": { "allowed_accounts": ["personal"] }
-```
-
-The path prefix assigns the account; the git remote is then cross-checked against
-it, so a repository cloned under the wrong prefix gets flagged instead of quietly
-billed to the wrong place. `cxr` refuses to run where the account is not allowed —
-and with `allowed_accounts` empty, it never refuses.
-
-</details>
-
-<details>
-<summary><b>Per-repository overrides</b> — if one project needs different routing</summary>
-
-<br>
-
-Drop `.agent-router.json` at a repository root. The router walks up from the
-working directory, finds the nearest one, and merges it over the global config for
-that call only.
-
-```json
-{
-  "agent_type_tiers": {"schema-migration-agent": "reasoning"},
-  "degrade": {"NORMAL": {"execution": "opus"}}
-}
-```
-
-Objects merge recursively and arrays replace wholesale, so a project states only
-what differs. The global config is never written to, and a malformed project file
-is ignored rather than breaking routing.
-
-</details>
-
-<details>
-<summary><b>Learning from your own history</b></summary>
-
-<br>
-
-Claude Code records the model, effort and token usage of every assistant turn.
-`router-learn` reads those transcripts and reports where the money went, how often
-each model was followed by a correction, and what the classifier would have chosen
-instead.
-
-```sh
-router-learn            # report and suggestions
-router-learn --apply    # same, and write the router-owned parts
-```
-
-Read-only by default; it never retunes itself. Correction detection is a keyword
-proxy over your follow-up messages, not a verdict — on a small sample it will be
-wrong, and where it disagrees with how a model felt to use, the feeling is the
-better evidence.
-
-</details>
-
-## Known limitations
-
-Read these before deciding what this will save you.
-
-**The main session cannot be routed.** No hook can change a running session's
-model — `PreModelSwitch` can only block a switch someone else requested. The
-router prices *delegated* work. In a session that does everything inline, its
-effect is whatever delegation it causes, not a percentage off the whole bill.
-`ccr` exists so that at least the session starts on the right model.
-
-**Per-model effort does not reach subagents.** Measured on a real run: with
-`modelSettings` setting Sonnet to `high` and the session at `xhigh`, a routed
-subagent came back as Sonnet at `xhigh`. The model rewrite was honoured; the
-effort setting was not. So routing buys the model saving — the large one, roughly
-15x on output between top and bottom tier — but not the effort saving.
-
-**Cursor cannot be routed at all.** Its hook API has no model control:
-`beforeSubmitPrompt` may return only `continue` and `user_message`, `preToolUse`
-answers allow/deny without rewriting tool input, the hook is not told which model
-is running, and there is no agent CLI to launch with one. Nothing here pretends
-otherwise.
-
-**Correction rates are a weak signal.** See the `router-learn` note above.
-
-## Design notes
-
-**Fails open, always.** Every hook exits 0 and emits nothing on any error. A
-broken router must never block a tool call — that trade is not close.
-
-**bash 3.2 compatible.** No associative arrays, no `${var,,}`. macOS ships bash
-3.2 and will not ship anything newer; a router that only runs on Linux is not a
-router for most of the people who need one.
-
-**`.enforce // true` is a trap.** jq's `//` treats `false` as empty, so that
-expression turns `false` into `true` and dry-run mode never engages. The config is
-read with `if has("enforce") then .enforce else true end` instead. Worth knowing
-before adding any other boolean setting.
-
-**A fork is never routed.** A forked agent inherits the parent model by design and
-a model override there is ignored, so the router passes it through untouched.
-
-## Prior art
-
-- [tzachbon/claude-model-router-hook](https://github.com/tzachbon/claude-model-router-hook) — four hook events, heuristics with an optional Haiku fallback. Defers the switch to the next session.
-- [bmersereau/claude-router](https://github.com/bmersereau/claude-router) — injects routing context and spawns tiered subagents. Costs roughly 3.4k tokens of overhead per subagent.
-- [maiha28781-cloud/claude-smart-model-router](https://github.com/maiha28781-cloud/claude-smart-model-router) — classifies and recommends; you still approve each one.
-- [lm-sys/RouteLLM](https://github.com/lm-sys/routellm) — trained routers for API calls. A different layer: no notion of an agent with tools.
-
-None of them degrade under a rate limit, which is the case that started this.
+Project-specific `.agent-router.json` overrides are merged over the matching
+host config for that task. Do not put host-specific keys for the other host in
+the project override.
+
+## Checks and limits
+
+`bash tests/run.sh` exercises the classifier, fallback, hooks, and wrappers
+against fixtures. `bash tests/verify-install.sh` checks both live runtimes and
+fails if their hook paths or files are crossed. `bash tests/audit-readme.sh`
+checks documented entry points.
+
+The router does not guarantee a token reduction for every task. A task placed
+on too-small a model may need a costly retry. `router why` and dry runs let
+you inspect a decision before relying on it. A failed task is not retried by
+the shell wrapper; only a router startup failure falls back to the native CLI.
 
 ## License
 

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Human-facing read-only status across the two isolated host runtimes.
+set -uo pipefail
+[ "${1:-status}" = status ] && [ "$#" -le 1 ] || {
+  echo 'usage: agent-router status' >&2; exit 2;
+}
+command -v jq >/dev/null 2>&1 || { echo 'agent-router: jq required' >&2; exit 1; }
+CLAUDE_DIR="${CLAUDE_ROUTER_HOME:-$HOME/.claude/router}"
+CODEX_DIR="${CODEX_ROUTER_HOME:-${CODEX_HOME:-$HOME/.codex}/router}"
+NOW=$(date +%s)
+WINDOW="${AGENT_ROUTER_ACTIVITY_SECONDS:-300}"
+case "$WINDOW" in ''|*[!0-9]*) WINDOW=300 ;; esac
+
+show_host() {
+  local host="$1" dir="$2" file="$2/activity.jsonl" entries latest
+  if [ ! -x "$dir/bin/router" ]; then
+    printf '%-7s not installed\n' "$host"
+    return
+  fi
+  if [ ! -s "$file" ]; then
+    printf '%-7s idle (no hook activity recorded)\n' "$host"
+    return
+  fi
+  entries=$(tail -n 1000 "$file" 2>/dev/null | jq -sr --argjson now "$NOW" --argjson window "$WINDOW" '
+    map(select(type == "object" and (.session | type == "string")))
+    | group_by(.session)
+    | map(last)
+    | map(select(.event != "SessionEnd" and (.ts | type == "number") and .ts <= $now and .ts >= ($now - $window)))
+    | sort_by(.ts) | reverse | .[]
+    | [.session, (if .model == "" then "model unknown" else .model end), ($now - .ts | tostring)] | @tsv
+  ' 2>/dev/null)
+  if [ -z "$entries" ]; then
+    printf '%-7s idle (no activity in last %ss)\n' "$host" "$WINDOW"
+    return
+  fi
+  while IFS="$(printf '\t')" read -r sid model age; do
+    printf '%-7s recent  model=%s  session=%s  last=%ss ago\n' "$host" "$model" "$sid" "$age"
+  done <<EOF
+$entries
+EOF
+}
+
+printf 'Automatic routing: CLI wrapper + lifecycle hooks\n'
+printf 'Activity (recent means observed by a hook; it does not prove a process is still open):\n'
+show_host claude "$CLAUDE_DIR"
+show_host codex "$CODEX_DIR"

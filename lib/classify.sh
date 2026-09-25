@@ -41,7 +41,19 @@ router_is_reasoning() {
 # retry, which is more expensive than having used Sonnet in the first place.
 router_is_trivial() {
   local t="$1"
+  # A read-only opening verb does not make a mixed request read-only.
+  # Keep narrowly mechanical fixes (typos, formatting, renames) cheap.
+  if [[ "$t" =~ ^(fix|perbaiki)[[:space:]]+(the[[:space:]]+)?(typo|spelling|salah[[:space:]]ketik) ]] &&
+     [[ ! "$t" =~ [[:space:]](and|dan|then|lalu)[[:space:]] ]]; then return 0; fi
+  if [[ "$t" =~ ^update[[:space:]]+(the[[:space:]]+)?changelog ]] &&
+     [[ ! "$t" =~ [[:space:]](and|dan|then|lalu)[[:space:]] ]]; then return 0; fi
+  [[ "$t" =~ (^|[[:space:]])(implement|build|create|add|fix|perbaiki|buat|bangun|ubah|tambahkan|integrate|deploy|rewrite|update|write|tulis)([[:space:]]|$) ]] && return 1
   [[ "$t" =~ ^(list|ls|find|locate|grep|search|cari|cek|check|show|print|read|baca|count|hitung) ]] && return 0
+  # Running a suite and reporting is mechanical; writing or fixing tests is not,
+  # and those verbs already returned above.
+  [[ "$t" =~ ^(run|jalankan)([[:space:]]+(the|all|semua))?([[:space:]]+(unit|integration))?[[:space:]]+tests? ]] && return 0
+  [[ "$t" =~ ^((go|npm|pnpm|yarn|make|cargo)[[:space:]]+test|pytest)([[:space:]]|$) ]] && return 0
+  [[ "$t" =~ ^(status|summari[sz]e|ringkas|jelaskan|explain|apa[[:space:]]+fungsi|what[[:space:]]+does)([[:space:]]|$) ]] && return 0
   [[ "$t" =~ (rename|ganti[[:space:]]nama|format|gofmt|prettier|lint|sort[[:space:]]imports|tidy|gofumpt) ]] && return 0
   [[ "$t" =~ (how[[:space:]]many|berapa[[:space:]]banyak|count[[:space:]]the) ]] && return 0
   [[ "$t" =~ (read[[:space:]]+(the[[:space:]]+)?file|show[[:space:]]+(me[[:space:]]+)?(the[[:space:]]+)?(content|file)) ]] && return 0
@@ -62,6 +74,14 @@ classify_tier() {
 
   if [ -n "$agent_type" ] && [ -f "$ROUTER_CONFIG" ]; then
     mapped=$(jq -r --arg a "$agent_type" '.agent_type_tiers[$a] // empty' "$ROUTER_CONFIG" 2>/dev/null)
+    # The router's own roles route even when a config predates them.
+    if [ -z "$mapped" ]; then
+      case "$agent_type" in
+        router-scout)     mapped=trivial ;;
+        router-builder)   mapped=execution ;;
+        router-inspector|router-navigator) mapped=reasoning ;;
+      esac
+    fi
     if [ -n "$mapped" ]; then printf '%s' "$mapped"; return 0; fi
   fi
 

@@ -19,9 +19,11 @@ command -v jq >/dev/null 2>&1 || exit 0
 [ -f "$ROUTER_CONFIG" ] || exit 0
 # shellcheck source=/dev/null
 . "$ROUTER_HOME/lib/config.sh"    || exit 0
+. "$ROUTER_HOME/lib/claude-agent.sh" || exit 0
 . "$ROUTER_HOME/lib/classify.sh"  || exit 0
 # shellcheck source=/dev/null
 . "$ROUTER_HOME/lib/governor.sh"  || exit 0
+. "$ROUTER_HOME/lib/claude-model.sh" || exit 0
 
 INPUT=$(cat)
 TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
@@ -29,11 +31,7 @@ TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 
 # A repository may override routing with .agent-router.json at its root.
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null)
-EFFECTIVE=$(router_effective_config "${CWD:-$PWD}")
-if router_is_temp_config "$EFFECTIVE"; then
-  ROUTER_CONFIG="$EFFECTIVE"
-  trap 'rm -f "$EFFECTIVE"' EXIT
-fi
+router_use_effective_config "${CWD:-$PWD}"
 
 TI=$(printf '%s' "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null) || exit 0
 AGENT_TYPE=$(printf '%s' "$TI" | jq -r '.subagent_type // ""' 2>/dev/null)

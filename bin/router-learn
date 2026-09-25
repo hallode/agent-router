@@ -299,7 +299,7 @@ def suggest(by_combo, tier_vs_model, dissatisfied, apply=False):
     print("\n  Correction detection is a keyword proxy, not a verdict. Where it")
     print("  disagrees with how the model felt to use, trust how it felt.")
 
-    # 3. The one edit that usually dominates: effort tiering in settings.json.
+    # 3. The one edit that usually dominates: per-model effort in settings.json.
     print("\n=== suggested ~/.claude/settings.json ===")
     print("""  "modelSettings": {
     "claude-opus-5":   {"effortLevel": "xhigh"},

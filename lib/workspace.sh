@@ -25,7 +25,7 @@
 # remote, so a repository checked out under the wrong prefix is flagged rather
 # than silently billed to the wrong account.
 
-ROUTER_HOME="${ROUTER_HOME:-$HOME/.claude/router}"
+ROUTER_HOME="${ROUTER_HOME:?set ROUTER_HOME to the host router directory}"
 ROUTER_CONFIG="${ROUTER_CONFIG:-$ROUTER_HOME/config.json}"
 
 workspace_enabled() {
